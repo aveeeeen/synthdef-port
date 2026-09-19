@@ -30,6 +30,8 @@ const q = createParam('q');
 const shp = createParam('shp');
 const sust = createParam('sust');
 const sweep = createParam('sweep');
+const unison = createParam('unison');
+const voices = createParam('voices');
 
 // ============================================================================
 // Helper Functions & Noise Nodes
@@ -73,6 +75,24 @@ const getFrequencyFromValue = (value, defaultNote = 36) => {
   freq *= Math.pow(2, octave);
   return Number(freq);
 };
+
+/**
+ * Gain adjustment helper ported from Strudel superdough (synth.mjs)
+ * Applies base attenuation (0.3) and voice scaling (1 / Math.sqrt(voices))
+ * to prevent clipping when playing polyphonic chords.
+ *
+ * References:
+ * - https://codeberg.org/uzu/strudel/src/branch/main/packages/superdough/synth.mjs
+ *   - const g = gainNode(0.3); // turn down
+ *   - const gainAdjustment = 1 / Math.sqrt(voices);
+ */
+const getGainAdjustment = (value, baseGain = 0.3) => {
+  const v = Number(value?.voices ?? value?.unison ?? 1);
+  const numVoices = Math.max(1, Math.min(100, isNaN(v) ? 1 : v));
+  const gainAdjustment = 1 / Math.sqrt(numVoices);
+  return baseGain * gainAdjustment;
+};
+
 
 
 /**
@@ -311,11 +331,10 @@ const combFilterNode = (ctx, delaySec = 0.02, feedback = 0.5) => {
  * Klang (Additive Synthesis Partials) Helper Node
  */
 const createKlangNode = (ctx, baseFreq, ratios, amps, time, dur) => {
-  const outGain = new GainNode(ctx, { gain: 1 });
+  const count = Math.min(ratios.length, amps.length);
+  const outGain = new GainNode(ctx, { gain: 1 / Math.max(1, count) });
   const oscs = [];
   const gains = [];
-
-  const count = Math.min(ratios.length, amps.length);
   for (let i = 0; i < count; i++) {
     const f = Math.max(10, Math.min(22000, Number(baseFreq) * ratios[i]));
     const osc = new OscillatorNode(ctx, { type: 'sine', frequency: f });
@@ -368,7 +387,7 @@ registerSound(
     let { freq, amp, attack, decay, duration, sustain, release } = value;
     const ctx = getAudioContext();
 
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultAttack = Number(attack ?? value.atk ?? 0.005);
     const defaultLen = Number(decay ?? value.len ?? 0.2);
     const defaultSust = Number(sustain ?? value.sust ?? 0.1);
@@ -486,7 +505,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 29);
-    const defaultAmp = Number(amp ?? 0.3);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultLen = Number(decay ?? value.len ?? 0.5);
     const clipDur = duration - 0.01;
 
@@ -607,7 +626,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 111);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 1);
     const defaultIndex = Number(index ?? 3);
     const defaultLen = Number(decay ?? value.len ?? 0.1);
@@ -690,7 +709,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 111);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 1);
     const defaultIndex = Number(index ?? 3);
     const defaultLen = Number(decay ?? value.len ?? 1.0);
@@ -771,7 +790,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 31);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultLen = Number(len ?? 0.4);
     const defaultPlen = Number(plen ?? 0.1);
     const defaultSweep = Number(sweep ?? 1);
@@ -889,7 +908,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 31);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultLen = Number(len ?? 0.4);
     const defaultClr = Number(clr ?? 1);
     const defaultShp = Number(shp ?? 0.5);
@@ -958,7 +977,7 @@ registerSound(
 registerSound(
   'skik',
   (time, value, onended) => {
-    let { freq, prate, attack, decay, duration, sustain, release } = value;
+    let { freq, amp, prate, attack, decay, duration, sustain, release } = value;
     const ctx = getAudioContext();
 
     const pitchRate = prate ?? 4;
@@ -968,7 +987,8 @@ registerSound(
     const defaultSustain = sustain ?? 0.3;
     const defaultRelease = release ?? 0.9;
 
-    const maxGain = 0.4;
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value, 0.4);
+    const maxGain = defaultAmp;
     const index = 128 * 12;
     const clipDur = duration - 0.01;
 
@@ -1077,7 +1097,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 31);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 1);
     const defaultPlen = Number(plen ?? 0.01);
     const defaultPrate = Number(prate ?? 8);
@@ -1174,7 +1194,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 31);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultPlen = Number(plen ?? 0.12);
     const defaultPrate = Number(prate ?? 6);
     const defaultLen = Number(decay ?? value.len ?? 1.4);
@@ -1256,7 +1276,7 @@ registerSound(
     let { freq, amp, duration, plen, decay } = value;
     const ctx = getAudioContext();
 
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultPlen = Number(plen ?? 0.1);
     const defaultLen = Number(decay ?? value.len ?? 2.0);
     const clipDur = duration - 0.01;
@@ -1328,7 +1348,7 @@ registerSound(
 registerSound(
   'ssn',
   (time, value, onended) => {
-    let { freq, prate, attack, decay, duration, sustain, release } = value;
+    let { freq, amp, prate, attack, decay, duration, sustain, release } = value;
     const ctx = getAudioContext();
 
     const pitchRate = prate ?? 4;
@@ -1338,7 +1358,8 @@ registerSound(
     const defaultSustain = sustain ?? 0;
     const defaultRelease = release ?? 0.9;
 
-    const maxGain = 0.6;
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value, 0.6);
+    const maxGain = defaultAmp;
     const index = 128 * 8;
     const clipDur = duration - 0.01;
 
@@ -1459,7 +1480,7 @@ registerSound(
     let { amp, attack, decay, duration, q } = value;
     const ctx = getAudioContext();
 
-    const defaultAmp = Number(amp ?? 1.5);
+    const defaultAmp = Number(amp ?? 1.5) * getGainAdjustment(value);
     const defaultAtk = Number(attack ?? value.atk ?? 0.0001);
     const defaultLen = Number(decay ?? value.len ?? 0.3);
     const defaultQ = Number(q ?? 0.7);
@@ -1546,7 +1567,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 51);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 0.4);
     const defaultPlen = Number(plen ?? 0.1);
     const defaultIndex = Number(index ?? 5);
@@ -1624,7 +1645,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 41);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 2);
     const defaultPlen = Number(plen ?? 0.05);
     const defaultIndex = Number(index ?? 8);
@@ -1694,7 +1715,7 @@ registerSound(
     let { amp, duration, decay } = value;
     const ctx = getAudioContext();
 
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultLen = Number(decay ?? value.len ?? 1.0);
     const clipDur = duration - 0.01;
 
@@ -1748,7 +1769,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 28);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultAtk = Number(attack ?? value.atk ?? 0.001);
     const defaultLen = Number(decay ?? value.len ?? 0.3);
     const defaultSust = Number(sustain ?? value.sust ?? 0.9);
@@ -1845,7 +1866,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 28);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultPlen = Number(plen ?? 0.2);
     const defaultLen = Number(decay ?? value.len ?? 1.0);
     const clipDur = duration - 0.01;
@@ -1939,7 +1960,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 28);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultPlen = Number(plen ?? 0.05);
     const defaultLen = Number(decay ?? value.len ?? 1.0);
     const clipDur = duration - 0.01;
@@ -2035,7 +2056,7 @@ registerSound(
     let { amp, duration, decay } = value;
     const ctx = getAudioContext();
 
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultLen = Number(decay ?? value.len ?? 1.0);
     const clipDur = duration - 0.01;
 
@@ -2109,7 +2130,7 @@ registerSound(
     let { amp, duration, plen, decay } = value;
     const ctx = getAudioContext();
 
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultPlen = Number(plen ?? 0.2);
     const defaultLen = Number(decay ?? value.len ?? 1.0);
     const clipDur = duration - 0.01;
@@ -2184,7 +2205,7 @@ registerSound(
     let { amp, duration, decay } = value;
     const ctx = getAudioContext();
 
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultLen = Number(decay ?? value.len ?? 1.0);
     const clipDur = duration - 0.01;
 
@@ -2264,7 +2285,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 41);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultLen = Number(decay ?? value.len ?? 1.0);
     const clipDur = duration - 0.01;
 
@@ -2347,7 +2368,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 35);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultPlen = Number(plen ?? 0.01);
     const defaultPrate = Number(prate ?? 2);
     const defaultAtk = Number(attack ?? value.atk ?? 0.05);
@@ -2422,7 +2443,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 35);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultPlen = Number(plen ?? 0.01);
     const defaultPrate = Number(prate ?? 2);
     const defaultAtk = Number(attack ?? value.atk ?? 0.01);
@@ -2511,7 +2532,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 28);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultAtk = Number(attack ?? value.atk ?? 0.001);
     const defaultLen = Number(decay ?? value.len ?? 0.5);
     const defaultIndex = Number(index ?? 12);
@@ -2597,7 +2618,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 29);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 1);
     const defaultIndex = Number(index ?? 0.7);
     const defaultPatk = Number(patk ?? 0.001);
@@ -2726,7 +2747,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 29);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 1);
     const defaultIndex = Number(index ?? 15);
     const defaultPlen = Number(plen ?? 0.12);
@@ -2818,7 +2839,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 28);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 3);
     const defaultIndex = Number(index ?? 0.5);
     const defaultPlen = Number(plen ?? 0.15);
@@ -2918,7 +2939,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 43);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 3);
     const defaultIndex = Number(index ?? 12);
     const defaultPlen = Number(plen ?? 0.2);
@@ -3027,7 +3048,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 28);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 1);
     const defaultIndex = Number(index ?? 1);
     const defaultPlen = Number(plen ?? 0.002);
@@ -3108,7 +3129,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 45);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 1.5);
     const defaultIndex = Number(index ?? 1);
     const defaultLen = Number(decay ?? value.len ?? 1.0);
@@ -3197,7 +3218,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 28);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 0.5);
     const defaultIndex = Number(index ?? 1);
     const defaultAtk = Number(attack ?? value.atk ?? 0.01);
@@ -3308,7 +3329,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 28);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 1);
     const defaultAtk = Number(attack ?? value.atk ?? 0.01);
     const defaultLen = Number(decay ?? value.len ?? 1.0);
@@ -3402,7 +3423,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 28);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 2);
     const defaultIndex = Number(index ?? 0.5);
     const defaultPlen = Number(plen ?? 0.05);
@@ -3475,7 +3496,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 28);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 1);
     const defaultIndex = Number(index ?? 2);
     const defaultPlen = Number(plen ?? 0.001);
@@ -3579,7 +3600,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 74);
-    const defaultAmp = Number(amp ?? 1.5);
+    const defaultAmp = Number(amp ?? 1.5) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 4);
     const defaultIndex = Number(index ?? 24);
     const defaultPlen = Number(plen ?? 0.1);
@@ -3668,7 +3689,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 107);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 4.1);
     const defaultIndex = Number(index ?? 24.1);
     const defaultAtk = Number(attack ?? value.atk ?? 0.0001);
@@ -3746,7 +3767,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 111);
-    const defaultAmp = Number(amp ?? 0.9);
+    const defaultAmp = Number(amp ?? 0.9) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 4.1);
     const defaultIndex = Number(index ?? 24.1);
     const defaultAtk = Number(attack ?? value.atk ?? 0.0001);
@@ -3821,7 +3842,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 39);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 0.5);
     const defaultLen = Number(decay ?? value.len ?? 1.0);
     const defaultQ = Number(q ?? 0.2);
@@ -3899,7 +3920,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 39);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 5);
     const defaultIndex = Number(index ?? 32);
     const defaultLen = Number(decay ?? value.len ?? 0.7);
@@ -4001,7 +4022,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 24);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultModrate = Number(modrate ?? 8);
     const defaultIndex = Number(index ?? 3);
     const defaultLen = Number(decay ?? value.len ?? 1.0);
@@ -4070,7 +4091,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 69);
-    const defaultAmp = Number(amp ?? 0.9);
+    const defaultAmp = Number(amp ?? 0.9) * getGainAdjustment(value);
     const defaultPlen = Number(plen ?? 0.001);
     const defaultPrate = Number(prate ?? 2);
     const defaultAtk = Number(attack ?? value.atk ?? 0.01);
@@ -4137,7 +4158,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 69);
-    const defaultAmp = Number(amp ?? 0.9);
+    const defaultAmp = Number(amp ?? 0.9) * getGainAdjustment(value);
     const defaultAtk = Number(attack ?? value.atk ?? 0.01);
     const defaultLen = Number(decay ?? value.len ?? 2.0);
     const defaultSust = Number(sustain ?? value.sust ?? 0);
@@ -4222,7 +4243,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 69);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultAtk = Number(attack ?? value.atk ?? 0.01);
     const defaultLen = Number(decay ?? value.len ?? 2.0);
     const defaultSust = Number(sustain ?? value.sust ?? 1.0);
@@ -4312,7 +4333,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 28);
-    const defaultAmp = Number(amp ?? 0.9);
+    const defaultAmp = Number(amp ?? 0.9) * getGainAdjustment(value);
     const defaultPlen = Number(plen ?? 0.1);
     const defaultPrate = Number(prate ?? 300);
     const defaultAtk = Number(attack ?? value.atk ?? 0.001);
@@ -4396,7 +4417,7 @@ registerSound(
       value.note !== undefined || value.freq !== undefined
         ? defaultFreq / 41.2
         : 1;
-    const defaultAmp = Number(amp ?? 0.9);
+    const defaultAmp = Number(amp ?? 0.9) * getGainAdjustment(value);
     const defaultAtk = Number(attack ?? value.atk ?? 0.01);
     const defaultLen = Number(decay ?? value.len ?? 1.0);
     const defaultCutoff = Math.min(22000, Number(cutoff ?? 12000) * ratio);
@@ -4459,7 +4480,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 69);
-    const defaultAmp = Number(amp ?? 1);
+    const defaultAmp = Number(amp ?? 1) * getGainAdjustment(value);
     const defaultPlen = Number(plen ?? 0.01);
     const defaultPrate = Number(prate ?? 8);
     const defaultAtk = Number(attack ?? value.atk ?? 0.01);
@@ -4552,7 +4573,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 69);
-    const defaultAmp = Number(amp ?? 0.9);
+    const defaultAmp = Number(amp ?? 0.9) * getGainAdjustment(value);
     const defaultPlen = Number(plen ?? 0.01);
     const defaultPrate = Number(prate ?? 8);
     const defaultAtk = Number(attack ?? value.atk ?? 0.01);
@@ -4644,7 +4665,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 69);
-    const defaultAmp = Number(amp ?? 0.9);
+    const defaultAmp = Number(amp ?? 0.9) * getGainAdjustment(value);
     const defaultPlen = Number(plen ?? 0.005);
     const defaultPrate = Number(prate ?? 8);
     const defaultAtk = Number(attack ?? value.atk ?? 0.01);
@@ -4738,7 +4759,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 69);
-    const defaultAmp = Number(amp ?? 0.9);
+    const defaultAmp = Number(amp ?? 0.9) * getGainAdjustment(value);
     const defaultAtk = Number(attack ?? value.atk ?? 0.01);
     const defaultLen = Number(decay ?? value.len ?? 2.0);
     const defaultSust = Number(sustain ?? value.sust ?? 0.7);
@@ -4840,7 +4861,7 @@ registerSound(
     const ctx = getAudioContext();
 
     const defaultFreq = getFrequencyFromValue(value, 69);
-    const defaultAmp = Number(amp ?? 0.9);
+    const defaultAmp = Number(amp ?? 0.9) * getGainAdjustment(value);
     const defaultAtk = Number(attack ?? value.atk ?? 0.01);
     const defaultLen = Number(decay ?? value.len ?? 2.0);
     const defaultSust = Number(sustain ?? value.sust ?? 0.7);
