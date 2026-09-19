@@ -9,6 +9,17 @@
  * - Noise and distortion helper functions
  */
 
+// Safe fallback for standalone / test environments
+if (typeof createParam === 'undefined') {
+  globalThis.createParam = (name) => name;
+}
+if (typeof registerSound === 'undefined') {
+  globalThis.registerSound = () => {};
+}
+if (typeof getAudioContext === 'undefined') {
+  globalThis.getAudioContext = () => ({ sampleRate: 44100 });
+}
+
 // ============================================================================
 // Custom Parameters
 // ============================================================================
@@ -62,30 +73,6 @@ const ratioA = createParam('ratioA');
 const ratioB = createParam('ratioB');
 const ratioC = createParam('ratioC');
 const width = createParam('width');
-
-// Digitone FM Synthesis Engine Helpers
-import {
-  digitoneAlgo1,
-  digitoneAlgo2,
-  digitoneAlgo3,
-  digitoneAlgo4,
-  digitoneAlgo5,
-  digitoneAlgo6,
-  digitoneAlgo7,
-  digitoneAlgo8,
-  digitoneAlgorithms,
-  getDigitoneAlgorithm,
-  calculateLevB,
-  calculateDetuneOffset,
-  getHarmonicPartials,
-  createDigitonePeriodicWave,
-  scheduleOperatorEnv,
-  createFeedbackLoop,
-  createDigitoneOverdriveNode,
-  createBaseWidthFilterNode,
-  createMultimodeFilterNode,
-  playDigitoneSynVoice,
-} from './digitone-fm.js';
 
 // ============================================================================
 // Helper Functions & Noise Nodes
@@ -5006,6 +4993,945 @@ registerSound(
 );
 
 // ============================================================================
+// Digitone FM Synthesis Engine Helpers & 8 Algorithms
+// References:
+// - digitone-manual/elektron-digitone-fm-synthesis-overview.pdf (Appendix A)
+// - digitone-manual/elektron-digitone-synth-track-parameters.pdf (Section 11)
+// ============================================================================
+
+export const paramToTimeSec = (val, minSec = 0.001, maxSec = 12.0) => {
+  const v = Math.max(0, Math.min(127, Number(val ?? 0)));
+  if (v === 0) return minSec;
+  return minSec * Math.pow(maxSec / minSec, v / 127);
+};
+
+export const paramToFrequency = (val, minFreq = 20, maxFreq = 20000) => {
+  const v = Math.max(0, Math.min(127, Number(val ?? 127)));
+  return minFreq * Math.pow(maxFreq / minFreq, v / 127);
+};
+
+export const paramToQ = (val, minQ = 0.707, maxQ = 24.0) => {
+  const v = Math.max(0, Math.min(127, Number(val ?? 0)));
+  return minQ + (maxQ - minQ) * Math.pow(v / 127, 2);
+};
+
+export const calculateDetuneOffset = (dtun) => {
+  const d = Math.max(0, Math.min(127, Number(dtun ?? 0)));
+  if (d <= 64) {
+    return (d / 64) * 0.015;
+  }
+  return 0.015 + Math.pow((d - 64) / 63, 2) * 0.35;
+};
+
+export const calculateLevB = (v) => {
+  const clamped = Math.max(0, Math.min(127, Number(v ?? 0)));
+  let b1 = 0;
+  let b2 = 0;
+  if (clamped <= 43) {
+    b1 = 127 * (clamped / 43);
+    b2 = 0;
+  } else if (clamped <= 85) {
+    b1 = 127 * (1 - (clamped - 43) / 42);
+    b2 = 127 * ((clamped - 43) / 42);
+  } else {
+    b1 = 127 * ((clamped - 85) / 42);
+    b2 = 127;
+  }
+  return { b1, b2 };
+};
+
+export const getHarmonicPartials = (harm, opName) => {
+  const numPartials = 32;
+  const partials = new Float32Array(numPartials);
+  partials[0] = 0;
+  partials[1] = 1.0;
+
+  const h = Number(harm ?? 0);
+  let effectiveHarm = 0;
+
+  if (opName === 'C') {
+    if (h < 0) {
+      effectiveHarm = Math.min(26, Math.abs(h));
+    }
+  } else if (opName === 'A' || opName === 'B1') {
+    if (h > 0) {
+      effectiveHarm = Math.min(26, h);
+    }
+  }
+
+  if (effectiveHarm === 0) {
+    return partials;
+  }
+
+  const segment = (effectiveHarm / 26) * 4;
+  const segIndex = Math.min(3, Math.floor(segment));
+  const t = segment - segIndex;
+
+  for (let n = 2; n < numPartials; n++) {
+    const isOdd = n % 2 !== 0;
+    const sawAmp = 1.0 / n;
+    const squareAmp = isOdd ? 1.0 / n : 0.0;
+    const oddEvenAmp = isOdd ? 1.0 / n : 0.5 / n;
+    const bellAmp = (n === 3 || n === 5 || n === 8 || n === 11) ? 0.8 / Math.sqrt(n) : 0.1 / n;
+
+    let amp = 0;
+    if (segIndex === 0) {
+      amp = t * sawAmp;
+    } else if (segIndex === 1) {
+      amp = (1 - t) * sawAmp + t * oddEvenAmp;
+    } else if (segIndex === 2) {
+      amp = (1 - t) * oddEvenAmp + t * squareAmp;
+    } else {
+      amp = (1 - t) * squareAmp + t * bellAmp;
+    }
+    partials[n] = amp;
+  }
+
+  return partials;
+};
+
+export const createDigitonePeriodicWave = (ctx, harm, opName) => {
+  if (typeof ctx?.createPeriodicWave !== 'function') {
+    return null;
+  }
+  const partials = getHarmonicPartials(harm, opName);
+  const real = new Float32Array(partials.length);
+  const imag = new Float32Array(partials.length);
+  for (let i = 1; i < partials.length; i++) {
+    imag[i] = partials[i];
+  }
+  return ctx.createPeriodicWave(real, imag, { disableNormalization: false });
+};
+
+export const scheduleOperatorEnv = (
+  param,
+  time,
+  {
+    delayVal = 0,
+    atkVal = 0,
+    decVal = 64,
+    endVal = 0,
+    levVal = 127,
+    trigMode = 1,
+    duration = 1.0,
+    maxDeviation = 1000,
+  }
+) => {
+  const delSec = paramToTimeSec(delayVal, 0, 2.0);
+  const atkSec = paramToTimeSec(atkVal, 0.001, 8.0);
+  const decSec = paramToTimeSec(decVal, 0.005, 12.0);
+  const peakLevel = (Math.max(0, Math.min(127, levVal)) / 127) * maxDeviation;
+  const endLevel = (Math.max(0, Math.min(127, endVal)) / 127) * maxDeviation;
+
+  const tStart = time + delSec;
+  const tPeak = tStart + atkSec;
+
+  param.cancelScheduledValues(time);
+  param.setValueAtTime(0, time);
+
+  if (delSec > 0) {
+    param.setValueAtTime(0, tStart);
+  }
+
+  param.linearRampToValueAtTime(peakLevel, tPeak);
+
+  if (trigMode === 1) {
+    const tEnd = tPeak + decSec;
+    param.linearRampToValueAtTime(endLevel, tEnd);
+  } else {
+    const sustainEnd = Math.max(tPeak, time + duration);
+    param.setValueAtTime(peakLevel, sustainEnd);
+    const tEnd = sustainEnd + decSec;
+    param.linearRampToValueAtTime(endLevel, tEnd);
+  }
+};
+
+export const createFeedbackLoop = (ctx, targetOp, fdbkGainValue) => {
+  if (!fdbkGainValue || fdbkGainValue <= 0) {
+    return {
+      disconnect: () => {},
+    };
+  }
+
+  const sampleRate = ctx.sampleRate ?? 44100;
+  const fbDelay = new DelayNode(ctx, { delayTime: 1 / sampleRate });
+  const fbGain = new GainNode(ctx, { gain: fdbkGainValue });
+
+  targetOp.connect(fbDelay);
+  fbDelay.connect(fbGain);
+  fbGain.connect(targetOp.frequency);
+
+  return {
+    fbDelay,
+    fbGain,
+    disconnect: () => {
+      try { targetOp.disconnect(fbDelay); } catch (e) {}
+      try { fbDelay.disconnect(); } catch (e) {}
+      try { fbGain.disconnect(); } catch (e) {}
+    },
+  };
+};
+
+export const digitoneAlgo1 = (ctx, time, ops, envNodes, fdbkGain) => {
+  const { opC, opA, opB1, opB2 } = ops;
+  const { gainA, gainB1, gainB2 } = envNodes;
+
+  const fb = createFeedbackLoop(ctx, opA, fdbkGain);
+
+  opB2.connect(gainB2);
+  gainB2.connect(opB1.frequency);
+
+  opB1.connect(gainB1);
+  gainB1.connect(opC.frequency);
+
+  opA.connect(gainA);
+  gainA.connect(opC.frequency);
+
+  const outX = new GainNode(ctx, { gain: 1 });
+  const outY = new GainNode(ctx, { gain: 1 });
+  opC.connect(outX);
+  opB1.connect(outY);
+
+  return {
+    outX,
+    outY,
+    feedbackOp: 'A',
+    disconnect: () => {
+      fb.disconnect();
+      try { opB2.disconnect(gainB2); } catch (e) {}
+      try { gainB2.disconnect(); } catch (e) {}
+      try { opB1.disconnect(gainB1); } catch (e) {}
+      try { gainB1.disconnect(); } catch (e) {}
+      try { opA.disconnect(gainA); } catch (e) {}
+      try { gainA.disconnect(); } catch (e) {}
+      try { opC.disconnect(outX); } catch (e) {}
+      try { opB1.disconnect(outY); } catch (e) {}
+      try { outX.disconnect(); } catch (e) {}
+      try { outY.disconnect(); } catch (e) {}
+    },
+  };
+};
+
+export const digitoneAlgo2 = (ctx, time, ops, envNodes, fdbkGain) => {
+  const { opC, opA, opB1, opB2 } = ops;
+  const { gainA, gainB1, gainB2 } = envNodes;
+
+  const fb = createFeedbackLoop(ctx, opB2, fdbkGain);
+
+  opA.connect(gainA);
+  gainA.connect(opC.frequency);
+
+  opB2.connect(gainB2);
+  gainB2.connect(opB1.frequency);
+
+  const outX = new GainNode(ctx, { gain: 1 });
+  const outY = new GainNode(ctx, { gain: 1 });
+  opC.connect(outX);
+  opB1.connect(outY);
+
+  return {
+    outX,
+    outY,
+    feedbackOp: 'B2',
+    disconnect: () => {
+      fb.disconnect();
+      try { opA.disconnect(gainA); } catch (e) {}
+      try { gainA.disconnect(); } catch (e) {}
+      try { opB2.disconnect(gainB2); } catch (e) {}
+      try { gainB2.disconnect(); } catch (e) {}
+      try { opC.disconnect(outX); } catch (e) {}
+      try { opB1.disconnect(outY); } catch (e) {}
+      try { outX.disconnect(); } catch (e) {}
+      try { outY.disconnect(); } catch (e) {}
+    },
+  };
+};
+
+export const digitoneAlgo3 = (ctx, time, ops, envNodes, fdbkGain) => {
+  const { opC, opA, opB1, opB2 } = ops;
+  const { gainA } = envNodes;
+
+  const fb = createFeedbackLoop(ctx, opA, fdbkGain);
+
+  opA.connect(gainA);
+  gainA.connect(opC.frequency);
+  gainA.connect(opB2.frequency);
+  gainA.connect(opB1.frequency);
+
+  const outX = new GainNode(ctx, { gain: 1 });
+  const outY = new GainNode(ctx, { gain: 1 });
+  opC.connect(outX);
+  opB2.connect(outX);
+  opB1.connect(outY);
+
+  return {
+    outX,
+    outY,
+    feedbackOp: 'A',
+    disconnect: () => {
+      fb.disconnect();
+      try { opA.disconnect(gainA); } catch (e) {}
+      try { gainA.disconnect(); } catch (e) {}
+      try { opC.disconnect(outX); } catch (e) {}
+      try { opB2.disconnect(outX); } catch (e) {}
+      try { opB1.disconnect(outY); } catch (e) {}
+      try { outX.disconnect(); } catch (e) {}
+      try { outY.disconnect(); } catch (e) {}
+    },
+  };
+};
+
+export const digitoneAlgo4 = (ctx, time, ops, envNodes, fdbkGain) => {
+  const { opC, opA, opB1, opB2 } = ops;
+  const { gainA, gainB1, gainB2 } = envNodes;
+
+  const fb = createFeedbackLoop(ctx, opB2, fdbkGain);
+
+  opB2.connect(gainB2);
+  gainB2.connect(opB1.frequency);
+
+  opB1.connect(gainB1);
+  gainB1.connect(opA.frequency);
+
+  opA.connect(gainA);
+  gainA.connect(opC.frequency);
+
+  const outX = new GainNode(ctx, { gain: 1 });
+  const outY = new GainNode(ctx, { gain: 1 });
+  opC.connect(outX);
+  opB1.connect(outY);
+
+  return {
+    outX,
+    outY,
+    feedbackOp: 'B2',
+    disconnect: () => {
+      fb.disconnect();
+      try { opB2.disconnect(gainB2); } catch (e) {}
+      try { gainB2.disconnect(); } catch (e) {}
+      try { opB1.disconnect(gainB1); } catch (e) {}
+      try { gainB1.disconnect(); } catch (e) {}
+      try { opA.disconnect(gainA); } catch (e) {}
+      try { gainA.disconnect(); } catch (e) {}
+      try { opC.disconnect(outX); } catch (e) {}
+      try { opB1.disconnect(outY); } catch (e) {}
+      try { outX.disconnect(); } catch (e) {}
+      try { outY.disconnect(); } catch (e) {}
+    },
+  };
+};
+
+export const digitoneAlgo5 = (ctx, time, ops, envNodes, fdbkGain) => {
+  const { opC, opA, opB1, opB2 } = ops;
+  const { gainA, gainB1, gainB2 } = envNodes;
+
+  const fb = createFeedbackLoop(ctx, opB1, fdbkGain);
+
+  opB1.connect(gainB1);
+  gainB1.connect(opA.frequency);
+
+  opB2.connect(gainB2);
+  gainB2.connect(opA.frequency);
+
+  opA.connect(gainA);
+  gainA.connect(opC.frequency);
+
+  const outX = new GainNode(ctx, { gain: 1 });
+  const outY = new GainNode(ctx, { gain: 1 });
+  opC.connect(outX);
+  opA.connect(outY);
+
+  return {
+    outX,
+    outY,
+    feedbackOp: 'B1',
+    disconnect: () => {
+      fb.disconnect();
+      try { opB1.disconnect(gainB1); } catch (e) {}
+      try { gainB1.disconnect(); } catch (e) {}
+      try { opB2.disconnect(gainB2); } catch (e) {}
+      try { gainB2.disconnect(); } catch (e) {}
+      try { opA.disconnect(gainA); } catch (e) {}
+      try { gainA.disconnect(); } catch (e) {}
+      try { opC.disconnect(outX); } catch (e) {}
+      try { opA.disconnect(outY); } catch (e) {}
+      try { outX.disconnect(); } catch (e) {}
+      try { outY.disconnect(); } catch (e) {}
+    },
+  };
+};
+
+export const digitoneAlgo6 = (ctx, time, ops, envNodes, fdbkGain) => {
+  const { opC, opA, opB1, opB2 } = ops;
+  const { gainA, gainB2 } = envNodes;
+
+  const fb = createFeedbackLoop(ctx, opA, fdbkGain);
+
+  opA.connect(gainA);
+  gainA.connect(opC.frequency);
+  gainA.connect(opB1.frequency);
+
+  opB2.connect(gainB2);
+  gainB2.connect(opC.frequency);
+  gainB2.connect(opB1.frequency);
+
+  const outX = new GainNode(ctx, { gain: 1 });
+  const outY = new GainNode(ctx, { gain: 1 });
+  opC.connect(outX);
+  opB1.connect(outY);
+
+  return {
+    outX,
+    outY,
+    feedbackOp: 'A',
+    disconnect: () => {
+      fb.disconnect();
+      try { opA.disconnect(gainA); } catch (e) {}
+      try { gainA.disconnect(); } catch (e) {}
+      try { opB2.disconnect(gainB2); } catch (e) {}
+      try { gainB2.disconnect(); } catch (e) {}
+      try { opC.disconnect(outX); } catch (e) {}
+      try { opB1.disconnect(outY); } catch (e) {}
+      try { outX.disconnect(); } catch (e) {}
+      try { outY.disconnect(); } catch (e) {}
+    },
+  };
+};
+
+export const digitoneAlgo7 = (ctx, time, ops, envNodes, fdbkGain) => {
+  const { opC, opA, opB1, opB2 } = ops;
+  const { gainA, gainB1, gainB2 } = envNodes;
+
+  const fb = createFeedbackLoop(ctx, opA, fdbkGain);
+
+  opA.connect(gainA);
+  gainA.connect(opC.frequency);
+
+  opB2.connect(gainB2);
+  gainB2.connect(opB1.frequency);
+
+  const outX = new GainNode(ctx, { gain: 1 });
+  opC.connect(outX);
+  gainA.connect(outX);
+
+  const outY = new GainNode(ctx, { gain: 1 });
+  opB1.connect(gainB1);
+  gainB1.connect(outY);
+  gainB2.connect(outY);
+
+  return {
+    outX,
+    outY,
+    feedbackOp: 'A',
+    disconnect: () => {
+      fb.disconnect();
+      try { opA.disconnect(gainA); } catch (e) {}
+      try { gainA.disconnect(); } catch (e) {}
+      try { opB2.disconnect(gainB2); } catch (e) {}
+      try { gainB2.disconnect(); } catch (e) {}
+      try { opC.disconnect(outX); } catch (e) {}
+      try { opB1.disconnect(gainB1); } catch (e) {}
+      try { gainB1.disconnect(); } catch (e) {}
+      try { outX.disconnect(); } catch (e) {}
+      try { outY.disconnect(); } catch (e) {}
+    },
+  };
+};
+
+export const digitoneAlgo8 = (ctx, time, ops, envNodes, fdbkGain) => {
+  const { opC, opA, opB1, opB2 } = ops;
+  const { gainA, gainB1, gainB2 } = envNodes;
+
+  const fb = createFeedbackLoop(ctx, opB1, fdbkGain);
+
+  opA.connect(gainA);
+  gainA.connect(opC.frequency);
+
+  const outX = new GainNode(ctx, { gain: 1 });
+  opC.connect(outX);
+  opB2.connect(gainB2);
+  gainB2.connect(outX);
+
+  const outY = new GainNode(ctx, { gain: 1 });
+  opB1.connect(gainB1);
+  gainB1.connect(outY);
+
+  return {
+    outX,
+    outY,
+    feedbackOp: 'B1',
+    disconnect: () => {
+      fb.disconnect();
+      try { opA.disconnect(gainA); } catch (e) {}
+      try { gainA.disconnect(); } catch (e) {}
+      try { opC.disconnect(outX); } catch (e) {}
+      try { opB2.disconnect(gainB2); } catch (e) {}
+      try { gainB2.disconnect(); } catch (e) {}
+      try { opB1.disconnect(gainB1); } catch (e) {}
+      try { gainB1.disconnect(); } catch (e) {}
+      try { outX.disconnect(); } catch (e) {}
+      try { outY.disconnect(); } catch (e) {}
+    },
+  };
+};
+
+export const digitoneAlgorithms = [
+  digitoneAlgo1,
+  digitoneAlgo2,
+  digitoneAlgo3,
+  digitoneAlgo4,
+  digitoneAlgo5,
+  digitoneAlgo6,
+  digitoneAlgo7,
+  digitoneAlgo8,
+];
+
+export const getDigitoneAlgorithm = (algoNumber) => {
+  const idx = Math.max(1, Math.min(8, Math.round(Number(algoNumber ?? 1)))) - 1;
+  return digitoneAlgorithms[idx];
+};
+
+let _digitoneSoftClipCurve = null;
+const getDigitoneSoftClipCurve = () => {
+  if (_digitoneSoftClipCurve) return _digitoneSoftClipCurve;
+  const n = 4096;
+  const curve = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = (i * 2) / n - 1;
+    curve[i] = Math.tanh(x * 2.0);
+  }
+  _digitoneSoftClipCurve = curve;
+  return curve;
+};
+
+export const createDigitoneOverdriveNode = (ctx, drvVal = 0) => {
+  const drv = Math.max(0, Math.min(127, Number(drvVal ?? 0)));
+  if (drv <= 0) {
+    const passthrough = new GainNode(ctx, { gain: 1 });
+    return {
+      input: passthrough,
+      output: passthrough,
+      disconnect: () => {
+        try { passthrough.disconnect(); } catch (e) {}
+      },
+    };
+  }
+
+  const driveGain = 1.0 + (drv / 127.0) * 12.0;
+  const inGainNode = new GainNode(ctx, { gain: driveGain });
+  const shaper = new WaveShaperNode(ctx, {
+    curve: getDigitoneSoftClipCurve(),
+    oversample: '2x',
+  });
+  const outGainNode = new GainNode(ctx, {
+    gain: 1.0 / Math.sqrt(driveGain),
+  });
+
+  inGainNode.connect(shaper);
+  shaper.connect(outGainNode);
+
+  return {
+    input: inGainNode,
+    output: outGainNode,
+    disconnect: () => {
+      try { inGainNode.disconnect(); } catch (e) {}
+      try { shaper.disconnect(); } catch (e) {}
+      try { outGainNode.disconnect(); } catch (e) {}
+    },
+  };
+};
+
+export const createBaseWidthFilterNode = (ctx, baseVal = 0, widthVal = 127) => {
+  const base = Math.max(0, Math.min(127, Number(baseVal ?? 0)));
+  const width = Math.max(0, Math.min(127, Number(widthVal ?? 127)));
+
+  if (base === 0 && width === 127) {
+    const passthrough = new GainNode(ctx, { gain: 1 });
+    return {
+      input: passthrough,
+      output: passthrough,
+      disconnect: () => {
+        try { passthrough.disconnect(); } catch (e) {}
+      },
+    };
+  }
+
+  const baseFreq = paramToFrequency(base, 20, 18000);
+  const minLpFreq = baseFreq;
+  const maxLpFreq = 20000;
+  const lpFreq = Math.min(
+    maxLpFreq,
+    minLpFreq * Math.pow(maxLpFreq / Math.max(20, minLpFreq), width / 127)
+  );
+
+  const hpNode = new BiquadFilterNode(ctx, {
+    type: 'highpass',
+    frequency: baseFreq,
+    Q: 0.707,
+  });
+
+  const lpNode = new BiquadFilterNode(ctx, {
+    type: 'lowpass',
+    frequency: lpFreq,
+    Q: 0.707,
+  });
+
+  hpNode.connect(lpNode);
+
+  return {
+    input: hpNode,
+    output: lpNode,
+    disconnect: () => {
+      try { hpNode.disconnect(); } catch (e) {}
+      try { lpNode.disconnect(); } catch (e) {}
+    },
+  };
+};
+
+export const createMultimodeFilterNode = (ctx, time, value) => {
+  const filterType = Math.round(Number(value.fltr_type ?? value.ftype ?? 1));
+  const fFreqVal = Number(value.fltr_freq ?? value.ffreq ?? value.cutoff ?? 127);
+  const fResoVal = Number(value.fltr_reso ?? value.freso ?? value.q ?? 0);
+  const fEnvDepthVal = Number(value.fltr_env ?? value.fenv ?? 0);
+
+  const baseFreq = paramToFrequency(fFreqVal, 20, 20000);
+  const filterQ = paramToQ(fResoVal, 0.707, 24);
+
+  if (filterType === 0) {
+    const passthrough = new GainNode(ctx, { gain: 1 });
+    return {
+      input: passthrough,
+      output: passthrough,
+      disconnect: () => {
+        try { passthrough.disconnect(); } catch (e) {}
+      },
+    };
+  }
+
+  const fAtkSec = paramToTimeSec(value.fltr_atk ?? value.fatk ?? 0, 0.001, 8.0);
+  const fDecSec = paramToTimeSec(value.fltr_dec ?? value.fdec ?? 64, 0.005, 12.0);
+  const fSusLevel = Math.max(0, Math.min(127, Number(value.fltr_sus ?? value.fsus ?? 127))) / 127;
+  const fRelSec = paramToTimeSec(value.fltr_rel ?? value.frel ?? 32, 0.005, 12.0);
+  const fDelSec = paramToTimeSec(value.fltr_del ?? value.fdel ?? 0, 0, 2.0);
+  const duration = Number(value.duration ?? 1.0);
+
+  const octaveSweep = (fEnvDepthVal / 64.0) * 5.0;
+
+  const scheduleFilterFreq = (filterNode) => {
+    const tStart = time + fDelSec;
+    const tPeak = tStart + fAtkSec;
+    const peakFreq = Math.max(20, Math.min(20000, baseFreq * Math.pow(2, octaveSweep)));
+    const susFreq = Math.max(20, Math.min(20000, baseFreq * Math.pow(2, octaveSweep * fSusLevel)));
+    const endFreq = baseFreq;
+
+    filterNode.frequency.cancelScheduledValues(time);
+    filterNode.frequency.setValueAtTime(baseFreq, time);
+
+    if (fDelSec > 0) {
+      filterNode.frequency.setValueAtTime(baseFreq, tStart);
+    }
+    filterNode.frequency.exponentialRampToValueAtTime(Math.max(20, peakFreq), tPeak);
+
+    const tSus = tPeak + fDecSec;
+    filterNode.frequency.exponentialRampToValueAtTime(Math.max(20, susFreq), tSus);
+
+    const tNoteOff = Math.max(tSus, time + duration);
+    filterNode.frequency.setValueAtTime(Math.max(20, susFreq), tNoteOff);
+
+    filterNode.frequency.exponentialRampToValueAtTime(Math.max(20, endFreq), tNoteOff + fRelSec);
+  };
+
+  let inputNode;
+  let outputNode;
+  const nodesToDisconnect = [];
+
+  if (filterType === 1) {
+    const lp = new BiquadFilterNode(ctx, {
+      type: 'lowpass',
+      frequency: baseFreq,
+      Q: filterQ,
+    });
+    scheduleFilterFreq(lp);
+    inputNode = lp;
+    outputNode = lp;
+    nodesToDisconnect.push(lp);
+  } else if (filterType === 2) {
+    const hp = new BiquadFilterNode(ctx, {
+      type: 'highpass',
+      frequency: baseFreq,
+      Q: filterQ,
+    });
+    scheduleFilterFreq(hp);
+    inputNode = hp;
+    outputNode = hp;
+    nodesToDisconnect.push(hp);
+  } else if (filterType === 3) {
+    const lp1 = new BiquadFilterNode(ctx, {
+      type: 'lowpass',
+      frequency: baseFreq,
+      Q: Math.sqrt(filterQ),
+    });
+    const lp2 = new BiquadFilterNode(ctx, {
+      type: 'lowpass',
+      frequency: baseFreq,
+      Q: Math.sqrt(filterQ),
+    });
+    scheduleFilterFreq(lp1);
+    scheduleFilterFreq(lp2);
+    lp1.connect(lp2);
+    inputNode = lp1;
+    outputNode = lp2;
+    nodesToDisconnect.push(lp1, lp2);
+  } else {
+    const lp = new BiquadFilterNode(ctx, {
+      type: 'lowpass',
+      frequency: baseFreq,
+      Q: filterQ,
+    });
+    scheduleFilterFreq(lp);
+    inputNode = lp;
+    outputNode = lp;
+    nodesToDisconnect.push(lp);
+  }
+
+  return {
+    input: inputNode,
+    output: outputNode,
+    disconnect: () => {
+      for (const n of nodesToDisconnect) {
+        try { n.disconnect(); } catch (e) {}
+      }
+    },
+  };
+};
+
+export const playDigitoneSynVoice = (
+  ctx,
+  time,
+  value,
+  onended,
+  getFrequencyHelper,
+  gainAdjustmentHelper
+) => {
+  const duration = Number(value.duration ?? 1.0);
+  const clipDur = Math.max(0.01, duration - 0.005);
+
+  const baseFreq = getFrequencyHelper
+    ? getFrequencyHelper(value, 48)
+    : Number(value.freq ?? 130.81);
+  const voiceGainAdjustment = gainAdjustmentHelper
+    ? gainAdjustmentHelper(value, 0.25)
+    : 0.25;
+
+  const algoNum = Math.max(1, Math.min(8, Math.round(Number(value.algo ?? 1))));
+  const ratioC = Number(value.ratioC ?? value.rc ?? 1.0);
+  const ratioA = Number(value.ratioA ?? value.ra ?? 1.0);
+  const ratioBVal = Number(value.ratioB ?? value.rb ?? 1.0);
+  const ratioB1 = Number(value.ratioB1 ?? ratioBVal);
+  const ratioB2 = Number(value.ratioB2 ?? ratioBVal);
+
+  const offsetC = Number(value.offsetC ?? 0);
+  const offsetA = Number(value.offsetA ?? 0);
+  const offsetB1 = Number(value.offsetB1 ?? 0);
+  const offsetB2 = Number(value.offsetB2 ?? 0);
+
+  const harm = Number(value.harm ?? 0);
+  const dtun = Number(value.dtun ?? value.detune ?? 0);
+  const fdbk = Math.max(0, Math.min(120, Number(value.fdbk ?? value.feedback ?? 0)));
+  const mix = Math.max(-64, Math.min(63, Number(value.mix ?? 0)));
+
+  const dtunOffset = calculateDetuneOffset(dtun);
+
+  const freqC = baseFreq * Math.max(0.01, ratioC + offsetC);
+  const freqA = baseFreq * Math.max(0.01, (ratioA + offsetA) * (1 + dtunOffset));
+  const freqB1 = baseFreq * Math.max(0.01, ratioB1 + offsetB1);
+  const freqB2 = baseFreq * Math.max(0.01, (ratioB2 + offsetB2) * (1 + dtunOffset));
+
+  const opC = new OscillatorNode(ctx, { frequency: freqC });
+  const opA = new OscillatorNode(ctx, { frequency: freqA });
+  const opB1 = new OscillatorNode(ctx, { frequency: freqB1 });
+  const opB2 = new OscillatorNode(ctx, { frequency: freqB2 });
+
+  const waveC = createDigitonePeriodicWave(ctx, harm, 'C');
+  const waveA = createDigitonePeriodicWave(ctx, harm, 'A');
+  const waveB1 = createDigitonePeriodicWave(ctx, harm, 'B1');
+  if (waveC) opC.setPeriodicWave(waveC);
+  if (waveA) opA.setPeriodicWave(waveA);
+  if (waveB1) opB1.setPeriodicWave(waveB1);
+
+  const atkA = value.atkA ?? value.atattackA ?? 0;
+  const decA = value.decA ?? 64;
+  const endA = value.endA ?? 0;
+  const levA = value.levA ?? 64;
+  const adel = value.adel ?? 0;
+  const atrg = value.atrg !== undefined ? Number(value.atrg) : 1;
+
+  const atkB = value.atkB ?? 0;
+  const decB = value.decB ?? 64;
+  const endB = value.endB ?? 0;
+  const levBVal = value.levB ?? 64;
+  const bdel = value.bdel ?? 0;
+  const btrg = value.btrg !== undefined ? Number(value.btrg) : 1;
+
+  const { b1: levB1, b2: levB2 } = calculateLevB(levBVal);
+
+  const gainA = new GainNode(ctx, { gain: 0 });
+  const gainB1 = new GainNode(ctx, { gain: 0 });
+  const gainB2 = new GainNode(ctx, { gain: 0 });
+
+  const maxModDeviationA = freqA * 8.0;
+  const maxModDeviationB1 = freqB1 * 8.0;
+  const maxModDeviationB2 = freqB2 * 8.0;
+
+  scheduleOperatorEnv(gainA.gain, time, {
+    delayVal: adel,
+    atkVal: atkA,
+    decVal: decA,
+    endVal: endA,
+    levVal: levA,
+    trigMode: atrg,
+    duration,
+    maxDeviation: maxModDeviationA,
+  });
+
+  scheduleOperatorEnv(gainB1.gain, time, {
+    delayVal: bdel,
+    atkVal: atkB,
+    decVal: decB,
+    endVal: endB,
+    levVal: levB1,
+    trigMode: btrg,
+    duration,
+    maxDeviation: maxModDeviationB1,
+  });
+
+  scheduleOperatorEnv(gainB2.gain, time, {
+    delayVal: bdel,
+    atkVal: atkB,
+    decVal: decB,
+    endVal: endB,
+    levVal: levB2,
+    trigMode: btrg,
+    duration,
+    maxDeviation: maxModDeviationB2,
+  });
+
+  const algoFunc = getDigitoneAlgorithm(algoNum);
+  const fdbkGainHz = (fdbk / 120.0) * baseFreq * 2.0;
+
+  const algoResult = algoFunc(
+    ctx,
+    time,
+    { opC, opA, opB1, opB2 },
+    { gainA, gainB1, gainB2 },
+    fdbkGainHz
+  );
+
+  const normMix = (mix + 64) / 127;
+  const mixGainX = Math.cos(normMix * 0.5 * Math.PI);
+  const mixGainY = Math.sin(normMix * 0.5 * Math.PI);
+
+  const mixedOut = new GainNode(ctx, { gain: 1 });
+  const xGain = new GainNode(ctx, { gain: mixGainX });
+  const yGain = new GainNode(ctx, { gain: mixGainY });
+
+  algoResult.outX.connect(xGain);
+  algoResult.outY.connect(yGain);
+  xGain.connect(mixedOut);
+  yGain.connect(mixedOut);
+
+  const drvVal = Number(value.drv ?? value.overdrive ?? 0);
+  const overdriveNode = createDigitoneOverdriveNode(ctx, drvVal);
+  mixedOut.connect(overdriveNode.input);
+
+  const baseVal = Number(value.base ?? 0);
+  const widthVal = Number(value.width ?? 127);
+  const baseWidthNode = createBaseWidthFilterNode(ctx, baseVal, widthVal);
+  overdriveNode.output.connect(baseWidthNode.input);
+
+  const multimodeNode = createMultimodeFilterNode(ctx, time, value);
+  baseWidthNode.output.connect(multimodeNode.input);
+
+  const ampAtkSec = paramToTimeSec(value.amp_atk ?? value.attack ?? value.atk ?? 0, 0.001, 8.0);
+  const ampDecSec = paramToTimeSec(value.amp_dec ?? value.decay ?? value.dec ?? 64, 0.005, 12.0);
+  const ampSusLevel = Math.max(0, Math.min(127, Number(value.amp_sus ?? value.sustain ?? value.sus ?? 127))) / 127;
+  const ampRelSec = paramToTimeSec(value.amp_rel ?? value.release ?? value.rel ?? 32, 0.005, 12.0);
+  const volVal = Math.max(0, Math.min(127, Number(value.vol ?? value.volume ?? 100)));
+  const masterAmp = (volVal / 127.0) * Number(value.amp ?? 1.0) * voiceGainAdjustment;
+
+  const ampGainNode = new GainNode(ctx, { gain: 0 });
+  multimodeNode.output.connect(ampGainNode);
+
+  ampGainNode.gain.cancelScheduledValues(time);
+  ampGainNode.gain.setValueAtTime(0, time);
+  ampGainNode.gain.linearRampToValueAtTime(masterAmp, time + ampAtkSec);
+  ampGainNode.gain.linearRampToValueAtTime(masterAmp * ampSusLevel, time + ampAtkSec + ampDecSec);
+
+  const tAmpNoteOff = Math.max(time + ampAtkSec + ampDecSec, time + clipDur);
+  ampGainNode.gain.setValueAtTime(masterAmp * ampSusLevel, tAmpNoteOff);
+  ampGainNode.gain.exponentialRampToValueAtTime(0.0001, tAmpNoteOff + ampRelSec);
+  ampGainNode.gain.linearRampToValueAtTime(0, tAmpNoteOff + ampRelSec + 0.01);
+
+  const panVal = Math.max(-64, Math.min(63, Number(value.pan ?? 0)));
+  const normPan = panVal / 64.0;
+  let finalOutNode = ampGainNode;
+  let pannerNode = null;
+
+  if (typeof StereoPannerNode !== 'undefined') {
+    pannerNode = new StereoPannerNode(ctx, { pan: normPan });
+    ampGainNode.connect(pannerNode);
+    finalOutNode = pannerNode;
+  }
+
+  const stopTime = tAmpNoteOff + ampRelSec + 0.02;
+
+  opC.start(time);
+  opA.start(time);
+  opB1.start(time);
+  opB2.start(time);
+
+  opC.stop(stopTime);
+  opA.stop(stopTime);
+  opB1.stop(stopTime);
+  opB2.stop(stopTime);
+
+  const cleanup = () => {
+    algoResult.disconnect();
+    try { opC.disconnect(); } catch (e) {}
+    try { opA.disconnect(); } catch (e) {}
+    try { opB1.disconnect(); } catch (e) {}
+    try { opB2.disconnect(); } catch (e) {}
+    try { xGain.disconnect(); } catch (e) {}
+    try { yGain.disconnect(); } catch (e) {}
+    try { mixedOut.disconnect(); } catch (e) {}
+    overdriveNode.disconnect();
+    baseWidthNode.disconnect();
+    multimodeNode.disconnect();
+    try { ampGainNode.disconnect(); } catch (e) {}
+    if (pannerNode) {
+      try { pannerNode.disconnect(); } catch (e) {}
+    }
+  };
+
+  opC.addEventListener('ended', () => {
+    cleanup();
+    if (typeof onended === 'function') {
+      onended();
+    }
+  });
+
+  return {
+    node: finalOutNode,
+    stop: (t) => {
+      try { opC.stop(t); } catch (e) {}
+      try { opA.stop(t); } catch (e) {}
+      try { opB1.stop(t); } catch (e) {}
+      try { opB2.stop(t); } catch (e) {}
+    },
+  };
+};
+
+// ============================================================================
 // 52. syn - Elektron Digitone FM Synth Track
 // References:
 // - digitone-manual/elektron-digitone-fm-synthesis-overview.pdf (A.1 - A.7)
@@ -5026,27 +5952,3 @@ registerSound(
   },
   { type: 'synth' },
 );
-
-// Export Digitone FM algorithms and helper utilities
-export {
-  digitoneAlgo1,
-  digitoneAlgo2,
-  digitoneAlgo3,
-  digitoneAlgo4,
-  digitoneAlgo5,
-  digitoneAlgo6,
-  digitoneAlgo7,
-  digitoneAlgo8,
-  digitoneAlgorithms,
-  getDigitoneAlgorithm,
-  calculateLevB,
-  calculateDetuneOffset,
-  getHarmonicPartials,
-  createDigitonePeriodicWave,
-  scheduleOperatorEnv,
-  createFeedbackLoop,
-  createDigitoneOverdriveNode,
-  createBaseWidthFilterNode,
-  createMultimodeFilterNode,
-  playDigitoneSynVoice,
-};

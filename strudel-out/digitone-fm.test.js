@@ -22,7 +22,7 @@ import {
   createBaseWidthFilterNode,
   createMultimodeFilterNode,
   playDigitoneSynVoice,
-} from './digitone-fm.js';
+} from './strudel-synthdef.js';
 
 // ============================================================================
 // Web Audio Mock Utilities for Headless Node.js Testing
