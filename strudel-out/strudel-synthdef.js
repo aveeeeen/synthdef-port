@@ -10,8 +10,70 @@
  */
 
 // ============================================================================
+// Custom Parameters
+// ============================================================================
+const atk = createParam('atk');
+const clr = createParam('clr');
+const contour = createParam('contour');
+const cutoff = createParam('cutoff');
+const detune = createParam('detune');
+const index = createParam('index');
+const len = createParam('len');
+const lpfend = createParam('lpfend');
+const lpfstart = createParam('lpfstart');
+const modrate = createParam('modrate');
+const noiseamp = createParam('noiseamp');
+const patk = createParam('patk');
+const plen = createParam('plen');
+const prate = createParam('prate');
+const q = createParam('q');
+const shp = createParam('shp');
+const sust = createParam('sust');
+const sweep = createParam('sweep');
+
+// ============================================================================
 // Helper Functions & Noise Nodes
 // ============================================================================
+
+/**
+ * Note and Frequency Conversion Helpers
+ * Ported from Strudel superdough (util.mjs, helpers.mjs)
+ */
+const noteToMidi = (note, defaultOctave = 3) => {
+  if (typeof note !== 'string') {
+    throw new Error('not a note: "' + note + '"');
+  }
+  const match = note.match(/^([a-gA-G])([#bsf]*)(-?[0-9]*)$/);
+  const [pc, acc = '', octStr] = match?.slice(1) || [];
+  if (!pc) {
+    throw new Error('not a note: "' + note + '"');
+  }
+  const oct = octStr !== '' && octStr !== undefined ? Number(octStr) : defaultOctave;
+  const chromas = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };
+  const accs = { '#': 1, b: -1, s: 1, f: -1 };
+  const offset = acc.split('').reduce((o, char) => o + (accs[char] || 0), 0);
+  const chroma = chromas[pc.toLowerCase()];
+  return (Number(oct) + 1) * 12 + chroma + offset;
+};
+
+const midiToFreq = (n) => {
+  return Math.pow(2, (n - 69) / 12) * 440;
+};
+
+const getFrequencyFromValue = (value, defaultNote = 36) => {
+  let { note, freq, octave = 0 } = value;
+  note = note || defaultNote;
+  if (typeof note === 'string') {
+    note = noteToMidi(note); // e.g. c3 => 48
+  }
+  // get frequency
+  if (!freq && typeof note === 'number') {
+    freq = midiToFreq(note); // + 48);
+  }
+  freq *= Math.pow(2, octave);
+  return Number(freq);
+};
+
 
 /**
  * White Noise Generator Node
@@ -204,13 +266,13 @@ const getCrossoverCurve = (threshold = 0.2) => {
 /**
  * WaveShaper Distortion Node
  */
-const waveShaperNode = (ctx, type = "tanh", amount = 1) => {
-  const shaper = new WaveShaperNode(ctx, { oversample: "2x" });
-  if (type === "tanh") {
+const waveShaperNode = (ctx, type = 'tanh', amount = 1) => {
+  const shaper = new WaveShaperNode(ctx, { oversample: '2x' });
+  if (type === 'tanh') {
     shaper.curve = getTanhCurve();
-  } else if (type === "softclip") {
+  } else if (type === 'softclip') {
     shaper.curve = getSoftClipCurve();
-  } else if (type === "crossover") {
+  } else if (type === 'crossover') {
     shaper.curve = getCrossoverCurve(0.2 * amount);
   } else {
     shaper.curve = getTanhCurve();
@@ -256,7 +318,7 @@ const createKlangNode = (ctx, baseFreq, ratios, amps, time, dur) => {
   const count = Math.min(ratios.length, amps.length);
   for (let i = 0; i < count; i++) {
     const f = Math.max(10, Math.min(22000, Number(baseFreq) * ratios[i]));
-    const osc = new OscillatorNode(ctx, { type: "sine", frequency: f });
+    const osc = new OscillatorNode(ctx, { type: 'sine', frequency: f });
     const g = new GainNode(ctx, { gain: Number(amps[i]) });
     osc.connect(g);
     g.connect(outGain);
@@ -301,7 +363,7 @@ const createKlangNode = (ctx, baseFreq, ratios, amps, time, dur) => {
 // 1. sbd2 - Bass Drum 2
 // ----------------------------------------------------------------------------
 registerSound(
-  "sbd2",
+  'sbd2',
   (time, value, onended) => {
     let { freq, amp, attack, decay, duration, sustain, release } = value;
     const ctx = getAudioContext();
@@ -312,11 +374,23 @@ registerSound(
     const defaultSust = Number(sustain ?? value.sust ?? 0.1);
     const clipDur = duration - 0.01;
 
-    // Body: pitch drop 261 -> 150 -> 50 Hz
-    const bodyOsc = new OscillatorNode(ctx, { type: "sine", frequency: 261 });
-    bodyOsc.frequency.setValueAtTime(261, time);
-    bodyOsc.frequency.exponentialRampToValueAtTime(150, time + 0.02);
-    bodyOsc.frequency.exponentialRampToValueAtTime(50, time + 0.12);
+    const defaultFreq = getFrequencyFromValue(value, 60);
+    const ratio = defaultFreq / 261;
+
+    // Body: pitch drop 261 -> 150 -> 50 Hz (scaled by ratio)
+    const bodyOsc = new OscillatorNode(ctx, {
+      type: 'sine',
+      frequency: defaultFreq,
+    });
+    bodyOsc.frequency.setValueAtTime(defaultFreq, time);
+    bodyOsc.frequency.exponentialRampToValueAtTime(
+      Math.max(20, 150 * ratio),
+      time + 0.02,
+    );
+    bodyOsc.frequency.exponentialRampToValueAtTime(
+      Math.max(20, 50 * ratio),
+      time + 0.12,
+    );
 
     const bodyGain = new GainNode(ctx, { gain: 0 });
     bodyGain.gain.setValueAtTime(0, time);
@@ -328,10 +402,13 @@ registerSound(
     );
     bodyGain.gain.linearRampToValueAtTime(0, time + clipDur);
 
-    // Pop: 750 -> 261 Hz sweep
-    const popOsc = new OscillatorNode(ctx, { type: "sine", frequency: 750 });
-    popOsc.frequency.setValueAtTime(750, time);
-    popOsc.frequency.exponentialRampToValueAtTime(261, time + 0.01);
+    // Pop: 750 -> 261 Hz sweep (scaled by ratio)
+    const popOsc = new OscillatorNode(ctx, {
+      type: 'sine',
+      frequency: Math.max(20, 750 * ratio),
+    });
+    popOsc.frequency.setValueAtTime(Math.max(20, 750 * ratio), time);
+    popOsc.frequency.exponentialRampToValueAtTime(defaultFreq, time + 0.01);
 
     const popGain = new GainNode(ctx, { gain: 0 });
     popGain.gain.setValueAtTime(0, time);
@@ -341,11 +418,11 @@ registerSound(
 
     // Click: highpass pulse burst
     const clickOsc = new OscillatorNode(ctx, {
-      type: "sawtooth",
+      type: 'sawtooth',
       frequency: 910,
     });
     const clickFilter = new BiquadFilterNode(ctx, {
-      type: "bandpass",
+      type: 'bandpass',
       frequency: 2110,
       Q: 3,
     });
@@ -354,7 +431,7 @@ registerSound(
     clickGain.gain.linearRampToValueAtTime(0.4, time + 0.001);
     clickGain.gain.linearRampToValueAtTime(0, time + 0.003);
 
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: defaultAmp });
 
     bodyOsc.connect(bodyGain);
@@ -374,7 +451,7 @@ registerSound(
     popOsc.stop(time + duration - 0.001);
     clickOsc.stop(time + duration - 0.001);
 
-    bodyOsc.addEventListener("ended", () => {
+    bodyOsc.addEventListener('ended', () => {
       bodyOsc.disconnect();
       bodyGain.disconnect();
       popOsc.disconnect();
@@ -396,26 +473,26 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 2. sbd - Bass Drum (Sub/Punch)
 // ----------------------------------------------------------------------------
 registerSound(
-  "sbd",
+  'sbd',
   (time, value, onended) => {
     let { freq, amp, attack, decay, duration, sustain, release } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 42);
+    const defaultFreq = getFrequencyFromValue(value, 29);
     const defaultAmp = Number(amp ?? 0.3);
     const defaultLen = Number(decay ?? value.len ?? 0.5);
     const clipDur = duration - 0.01;
 
     // Body
     const bodyOsc = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * 6,
     });
     bodyOsc.frequency.setValueAtTime(defaultFreq * 6, time);
@@ -439,7 +516,7 @@ registerSound(
     bodyGain.gain.linearRampToValueAtTime(0, time + clipDur);
 
     // Pop
-    const popOsc = new OscillatorNode(ctx, { type: "sine", frequency: 750 });
+    const popOsc = new OscillatorNode(ctx, { type: 'sine', frequency: 750 });
     popOsc.frequency.setValueAtTime(750, time);
     popOsc.frequency.exponentialRampToValueAtTime(250, time + 0.01);
     const popGain = new GainNode(ctx, { gain: 0 });
@@ -450,7 +527,7 @@ registerSound(
 
     // FM Click
     const clickMod = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * 4,
     });
     const clickModGain = new GainNode(ctx, { gain: defaultFreq * 4 * 80 });
@@ -461,7 +538,7 @@ registerSound(
     );
 
     const clickCar = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     const clickGain = new GainNode(ctx, { gain: 0 });
@@ -472,7 +549,7 @@ registerSound(
     clickMod.connect(clickModGain);
     clickModGain.connect(clickCar.frequency);
 
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: defaultAmp * 1.2 });
 
     bodyOsc.connect(bodyGain);
@@ -493,7 +570,7 @@ registerSound(
     clickMod.stop(time + duration - 0.001);
     clickCar.stop(time + duration - 0.001);
 
-    bodyOsc.addEventListener("ended", () => {
+    bodyOsc.addEventListener('ended', () => {
       bodyOsc.disconnect();
       bodyGain.disconnect();
       popOsc.disconnect();
@@ -517,19 +594,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 3. shh - Closed Hi-Hat
 // ----------------------------------------------------------------------------
 registerSound(
-  "shh",
+  'shh',
   (time, value, onended) => {
     let { freq, amp, attack, decay, duration, modrate, index } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 5000);
+    const defaultFreq = getFrequencyFromValue(value, 111);
     const defaultAmp = Number(amp ?? 1);
     const defaultModrate = Number(modrate ?? 1);
     const defaultIndex = Number(index ?? 3);
@@ -538,11 +615,11 @@ registerSound(
 
     // Carrier & Modulator
     const car = new OscillatorNode(ctx, {
-      type: "square",
+      type: 'square',
       frequency: defaultFreq,
     });
     const mod = new OscillatorNode(ctx, {
-      type: "square",
+      type: 'square',
       frequency: defaultFreq * defaultModrate,
     });
     const modGain = new GainNode(ctx, {
@@ -550,11 +627,11 @@ registerSound(
     });
 
     // Ring mod source simulation
-    const ring = new OscillatorNode(ctx, { type: "square", frequency: 700 });
+    const ring = new OscillatorNode(ctx, { type: 'square', frequency: 700 });
     const ringGain = new GainNode(ctx, { gain: 1 });
 
     const filter = new BiquadFilterNode(ctx, {
-      type: "highpass",
+      type: 'highpass',
       frequency: 6000,
       Q: 3.33,
     });
@@ -580,7 +657,7 @@ registerSound(
     mod.stop(time + duration - 0.001);
     ring.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod.disconnect();
       modGain.disconnect();
@@ -600,19 +677,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 4. soh - Open Hi-Hat
 // ----------------------------------------------------------------------------
 registerSound(
-  "soh",
+  'soh',
   (time, value, onended) => {
     let { freq, amp, attack, decay, duration, modrate, index } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 5000);
+    const defaultFreq = getFrequencyFromValue(value, 111);
     const defaultAmp = Number(amp ?? 1);
     const defaultModrate = Number(modrate ?? 1);
     const defaultIndex = Number(index ?? 3);
@@ -620,22 +697,22 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const car = new OscillatorNode(ctx, {
-      type: "square",
+      type: 'square',
       frequency: defaultFreq,
     });
     const mod = new OscillatorNode(ctx, {
-      type: "square",
+      type: 'square',
       frequency: defaultFreq * defaultModrate,
     });
     const modGain = new GainNode(ctx, {
       gain: defaultFreq * defaultModrate * defaultIndex,
     });
 
-    const ring = new OscillatorNode(ctx, { type: "square", frequency: 700 });
+    const ring = new OscillatorNode(ctx, { type: 'square', frequency: 700 });
     const ringGain = new GainNode(ctx, { gain: 1 });
 
     const filter = new BiquadFilterNode(ctx, {
-      type: "highpass",
+      type: 'highpass',
       frequency: 6000,
       Q: 3.33,
     });
@@ -661,7 +738,7 @@ registerSound(
     mod.stop(time + duration - 0.001);
     ring.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod.disconnect();
       modGain.disconnect();
@@ -681,19 +758,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 5. mchbd - Microtonal/Complex Kick
 // ----------------------------------------------------------------------------
 registerSound(
-  "mchbd",
+  'mchbd',
   (time, value, onended) => {
     let { freq, amp, duration, clr, shp, sweep, contour, len, plen } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 50);
+    const defaultFreq = getFrequencyFromValue(value, 31);
     const defaultAmp = Number(amp ?? 1);
     const defaultLen = Number(len ?? 0.4);
     const defaultPlen = Number(plen ?? 0.1);
@@ -704,7 +781,7 @@ registerSound(
 
     // Carrier
     const car = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     car.frequency.setValueAtTime(defaultFreq * (1 + defaultSweep * 6), time);
@@ -719,7 +796,7 @@ registerSound(
 
     // Modulator
     const mod = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     const modGain = new GainNode(ctx, {
@@ -732,7 +809,7 @@ registerSound(
 
     // Harmonics
     const h3 = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * 3,
     });
     const h3Gain = new GainNode(ctx, { gain: Math.max(0, defaultClr * 0.3) });
@@ -740,13 +817,13 @@ registerSound(
 
     // Triangle component
     const tri = new OscillatorNode(ctx, {
-      type: "triangle",
+      type: 'triangle',
       frequency: defaultFreq,
     });
     const triGain = new GainNode(ctx, { gain: defaultShp * 0.9 });
     tri.connect(triGain);
 
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     car.connect(shaper);
@@ -776,7 +853,7 @@ registerSound(
     h3.stop(time + duration - 0.001);
     tri.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod.disconnect();
       modGain.disconnect();
@@ -799,19 +876,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 6. mchtone - Microtonal Feedback Tone
 // ----------------------------------------------------------------------------
 registerSound(
-  "mchtone",
+  'mchtone',
   (time, value, onended) => {
     let { freq, amp, duration, clr, shp, sweep, len } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 50);
+    const defaultFreq = getFrequencyFromValue(value, 31);
     const defaultAmp = Number(amp ?? 1);
     const defaultLen = Number(len ?? 0.4);
     const defaultClr = Number(clr ?? 1);
@@ -819,11 +896,11 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const car = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     const mod = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * defaultClr,
     });
     const modGain = new GainNode(ctx, { gain: defaultFreq * defaultShp * 16 });
@@ -831,7 +908,7 @@ registerSound(
     mod.connect(modGain);
     modGain.connect(car.frequency);
 
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     car.connect(shaper);
@@ -855,7 +932,7 @@ registerSound(
     car.stop(time + duration - 0.001);
     mod.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod.disconnect();
       modGain.disconnect();
@@ -872,20 +949,20 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 7. skik - FM Kick (from instruction.md reference)
 // ----------------------------------------------------------------------------
 registerSound(
-  "skik",
+  'skik',
   (time, value, onended) => {
     let { freq, prate, attack, decay, duration, sustain, release } = value;
     const ctx = getAudioContext();
 
     const pitchRate = prate ?? 4;
-    const defaultFreq = freq ?? 40;
+    const defaultFreq = getFrequencyFromValue(value, 28);
     const defaultAttack = attack ?? 0.001;
     const defaultLen = decay ?? 1;
     const defaultSustain = sustain ?? 0.3;
@@ -896,7 +973,7 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const o = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: Number(defaultFreq),
     });
     const a = new GainNode(ctx, {
@@ -904,7 +981,7 @@ registerSound(
     });
 
     const m = new OscillatorNode(ctx, {
-      type: "sawtooth",
+      type: 'sawtooth',
       frequency: Number(defaultFreq * 2),
     });
     const ma = new GainNode(ctx, {
@@ -912,7 +989,7 @@ registerSound(
     });
 
     const highpass = new BiquadFilterNode(ctx, {
-      type: "highpass",
+      type: 'highpass',
       Q: 2,
       frequency: 30,
     });
@@ -970,7 +1047,7 @@ registerSound(
     o.stop(time + duration - 0.001);
     m.stop(time + duration - 0.001);
 
-    o.addEventListener("ended", () => {
+    o.addEventListener('ended', () => {
       m.disconnect();
       ma.disconnect();
       o.disconnect();
@@ -987,19 +1064,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 8. skik2 - Dual FM Kick with Click
 // ----------------------------------------------------------------------------
 registerSound(
-  "skik2",
+  'skik2',
   (time, value, onended) => {
     let { freq, amp, duration, modrate, plen, prate, index, decay } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 50);
+    const defaultFreq = getFrequencyFromValue(value, 31);
     const defaultAmp = Number(amp ?? 1);
     const defaultModrate = Number(modrate ?? 1);
     const defaultPlen = Number(plen ?? 0.01);
@@ -1010,7 +1087,7 @@ registerSound(
 
     // Carrier
     const car = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     car.frequency.setValueAtTime(defaultFreq * defaultPrate, time);
@@ -1018,7 +1095,7 @@ registerSound(
 
     // Mod 1
     const mod = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * defaultModrate,
     });
     const modGain = new GainNode(ctx, {
@@ -1029,7 +1106,7 @@ registerSound(
 
     // Click
     const click = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * 4,
     });
     const clickGain = new GainNode(ctx, { gain: 0 });
@@ -1038,11 +1115,11 @@ registerSound(
     click.connect(clickGain);
 
     const hpf = new BiquadFilterNode(ctx, {
-      type: "highpass",
+      type: 'highpass',
       frequency: 50,
       Q: 1.4,
     });
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     car.connect(hpf);
@@ -1063,7 +1140,7 @@ registerSound(
     mod.stop(time + duration - 0.001);
     click.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod.disconnect();
       modGain.disconnect();
@@ -1084,19 +1161,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 9. sak - Attack / Snare / Kick Hybrid
 // ----------------------------------------------------------------------------
 registerSound(
-  "sak",
+  'sak',
   (time, value, onended) => {
     let { freq, amp, duration, plen, prate, index, modrate, decay } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 50);
+    const defaultFreq = getFrequencyFromValue(value, 31);
     const defaultAmp = Number(amp ?? 1);
     const defaultPlen = Number(plen ?? 0.12);
     const defaultPrate = Number(prate ?? 6);
@@ -1106,7 +1183,7 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const car = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     car.frequency.setValueAtTime(defaultFreq * defaultPrate, time);
@@ -1117,7 +1194,7 @@ registerSound(
     car.frequency.exponentialRampToValueAtTime(defaultFreq, time + defaultPlen);
 
     const mod = new OscillatorNode(ctx, {
-      type: "sawtooth",
+      type: 'sawtooth',
       frequency: defaultFreq * defaultModrate,
     });
     const modGain = new GainNode(ctx, {
@@ -1127,11 +1204,11 @@ registerSound(
     modGain.connect(car.frequency);
 
     const hpf = new BiquadFilterNode(ctx, {
-      type: "highpass",
+      type: 'highpass',
       frequency: 50,
       Q: 3.33,
     });
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     car.connect(hpf);
@@ -1149,7 +1226,7 @@ registerSound(
     car.stop(time + duration - 0.001);
     mod.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod.disconnect();
       modGain.disconnect();
@@ -1167,14 +1244,14 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 10. sak2 - Additive Hit
 // ----------------------------------------------------------------------------
 registerSound(
-  "sak2",
+  'sak2',
   (time, value, onended) => {
     let { freq, amp, duration, plen, decay } = value;
     const ctx = getAudioContext();
@@ -1184,12 +1261,18 @@ registerSound(
     const defaultLen = Number(decay ?? value.len ?? 2.0);
     const clipDur = duration - 0.01;
 
+    const defaultFreq = getFrequencyFromValue(value, 31);
+    const ratio =
+      value.note !== undefined || value.freq !== undefined
+        ? defaultFreq / 49
+        : 1;
+
     const oscs = [];
     const mixer = new GainNode(ctx, { gain: 1 / 18 });
 
     for (let i = 0; i < 18; i++) {
-      const baseF = 20 + ((i * 73) % 80); // Deterministic pseudo-hash 20-100Hz
-      const osc = new OscillatorNode(ctx, { type: "sine", frequency: baseF });
+      const baseF = (20 + ((i * 73) % 80)) * ratio; // Deterministic pseudo-hash 20-100Hz
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: baseF });
       osc.frequency.setValueAtTime(baseF * 12, time);
       osc.frequency.exponentialRampToValueAtTime(
         baseF * 4,
@@ -1202,7 +1285,7 @@ registerSound(
       oscs.push(osc);
     }
 
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     mixer.connect(shaper);
@@ -1213,7 +1296,7 @@ registerSound(
     masterGain.gain.exponentialRampToValueAtTime(0.0001, time + defaultLen);
     masterGain.gain.linearRampToValueAtTime(0, time + clipDur);
 
-    oscs[0].addEventListener("ended", () => {
+    oscs[0].addEventListener('ended', () => {
       oscs.forEach((o) => {
         try {
           o.disconnect();
@@ -1236,20 +1319,20 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 11. ssn - Snare (from instruction.md reference)
 // ----------------------------------------------------------------------------
 registerSound(
-  "ssn",
+  'ssn',
   (time, value, onended) => {
     let { freq, prate, attack, decay, duration, sustain, release } = value;
     const ctx = getAudioContext();
 
     const pitchRate = prate ?? 4;
-    const defaultFreq = freq ?? 120;
+    const defaultFreq = getFrequencyFromValue(value, 47);
     const defaultAttack = attack ?? 0.001;
     const defaultLen = decay ?? 0.5;
     const defaultSustain = sustain ?? 0;
@@ -1260,7 +1343,7 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const o = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: Number(defaultFreq),
     });
 
@@ -1275,7 +1358,7 @@ registerSound(
     });
 
     const m = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: Number(defaultFreq),
     });
 
@@ -1284,7 +1367,7 @@ registerSound(
     });
 
     const highpass = new BiquadFilterNode(ctx, {
-      type: "highpass",
+      type: 'highpass',
       Q: 4,
       frequency: 120,
     });
@@ -1345,7 +1428,7 @@ registerSound(
     noise.stop(time + duration - 0.001);
     m.stop(time + duration - 0.001);
 
-    o.addEventListener("ended", () => {
+    o.addEventListener('ended', () => {
       m.disconnect();
       ma.disconnect();
       disconnectNoise();
@@ -1364,14 +1447,14 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 12. scp - Handclap
 // ----------------------------------------------------------------------------
 registerSound(
-  "scp",
+  'scp',
   (time, value, onended) => {
     let { amp, attack, decay, duration, q } = value;
     const ctx = getAudioContext();
@@ -1389,7 +1472,7 @@ registerSound(
     } = lfNoise0Node(ctx, 12000, 1.0);
 
     const rlpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: 12000,
       Q: 1 / Math.max(0.01, 1 - defaultQ),
     });
@@ -1397,7 +1480,7 @@ registerSound(
     rlpf.frequency.exponentialRampToValueAtTime(4000, time + defaultLen);
 
     const bpf = new BiquadFilterNode(ctx, {
-      type: "bandpass",
+      type: 'bandpass',
       frequency: 8000,
       Q: 10,
     });
@@ -1405,7 +1488,7 @@ registerSound(
     bpf.frequency.exponentialRampToValueAtTime(800, time + defaultLen);
 
     const rhpf = new BiquadFilterNode(ctx, {
-      type: "highpass",
+      type: 'highpass',
       frequency: 800,
       Q: 3.33,
     });
@@ -1419,7 +1502,7 @@ registerSound(
     envGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.02 + defaultLen);
     envGain.gain.linearRampToValueAtTime(0, time + clipDur);
 
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: defaultAmp });
 
     noiseNode.connect(rlpf);
@@ -1432,7 +1515,7 @@ registerSound(
     noise.start(time);
     noise.stop(time + duration - 0.001);
 
-    noise.addEventListener("ended", () => {
+    noise.addEventListener('ended', () => {
       disconnectNoise();
       rlpf.disconnect();
       bpf.disconnect();
@@ -1450,19 +1533,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 13. sperc - Percussion
 // ----------------------------------------------------------------------------
 registerSound(
-  "sperc",
+  'sperc',
   (time, value, onended) => {
     let { freq, amp, duration, modrate, plen, index, decay } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 160);
+    const defaultFreq = getFrequencyFromValue(value, 51);
     const defaultAmp = Number(amp ?? 1);
     const defaultModrate = Number(modrate ?? 0.4);
     const defaultPlen = Number(plen ?? 0.1);
@@ -1471,14 +1554,14 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const car = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     car.frequency.setValueAtTime(defaultFreq * 4, time);
     car.frequency.exponentialRampToValueAtTime(defaultFreq, time + defaultPlen);
 
     const mod = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * defaultModrate,
     });
     const modGain = new GainNode(ctx, {
@@ -1488,11 +1571,11 @@ registerSound(
     modGain.connect(car.frequency);
 
     const hpf = new BiquadFilterNode(ctx, {
-      type: "highpass",
+      type: 'highpass',
       frequency: 80,
       Q: 1.0,
     });
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     car.connect(hpf);
@@ -1510,7 +1593,7 @@ registerSound(
     car.stop(time + duration - 0.001);
     mod.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod.disconnect();
       modGain.disconnect();
@@ -1528,19 +1611,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 14. stom - Tom
 // ----------------------------------------------------------------------------
 registerSound(
-  "stom",
+  'stom',
   (time, value, onended) => {
     let { freq, amp, duration, modrate, plen, index, decay } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 88);
+    const defaultFreq = getFrequencyFromValue(value, 41);
     const defaultAmp = Number(amp ?? 1);
     const defaultModrate = Number(modrate ?? 2);
     const defaultPlen = Number(plen ?? 0.05);
@@ -1549,14 +1632,14 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const car = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     car.frequency.setValueAtTime(defaultFreq * 4, time);
     car.frequency.exponentialRampToValueAtTime(defaultFreq, time + defaultPlen);
 
     const mod = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * defaultModrate,
     });
     const modGain = new GainNode(ctx, {
@@ -1565,7 +1648,7 @@ registerSound(
     mod.connect(modGain);
     modGain.connect(car.frequency);
 
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     car.connect(shaper);
@@ -1582,7 +1665,7 @@ registerSound(
     car.stop(time + duration - 0.001);
     mod.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod.disconnect();
       modGain.disconnect();
@@ -1599,14 +1682,14 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 15. snoise - Filtered Noise Burst
 // ----------------------------------------------------------------------------
 registerSound(
-  "snoise",
+  'snoise',
   (time, value, onended) => {
     let { amp, duration, decay } = value;
     const ctx = getAudioContext();
@@ -1621,7 +1704,7 @@ registerSound(
       disconnect: disconnectNoise,
     } = clipNoiseNode(ctx, 0.5);
     const hpf = new BiquadFilterNode(ctx, {
-      type: "highpass",
+      type: 'highpass',
       frequency: 7000,
       Q: 1.0,
     });
@@ -1638,7 +1721,7 @@ registerSound(
     noise.start(time);
     noise.stop(time + duration - 0.001);
 
-    noise.addEventListener("ended", () => {
+    noise.addEventListener('ended', () => {
       disconnectNoise();
       hpf.disconnect();
       masterGain.disconnect();
@@ -1652,19 +1735,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 16. ssub - Sub Bass
 // ----------------------------------------------------------------------------
 registerSound(
-  "ssub",
+  'ssub',
   (time, value, onended) => {
     let { freq, amp, duration, attack, decay, sustain, release } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 40);
+    const defaultFreq = getFrequencyFromValue(value, 28);
     const defaultAmp = Number(amp ?? 1);
     const defaultAtk = Number(attack ?? value.atk ?? 0.001);
     const defaultLen = Number(decay ?? value.len ?? 0.3);
@@ -1673,15 +1756,15 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const osc1 = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     const osc2 = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * 2,
     });
     const osc3 = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * 3,
     });
 
@@ -1694,11 +1777,11 @@ registerSound(
     osc3.connect(g3);
 
     const lpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: 200,
       Q: 1.0,
     });
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     g1.connect(lpf);
@@ -1727,7 +1810,7 @@ registerSound(
     osc2.stop(time + duration - 0.001);
     osc3.stop(time + duration - 0.001);
 
-    osc1.addEventListener("ended", () => {
+    osc1.addEventListener('ended', () => {
       osc1.disconnect();
       osc2.disconnect();
       osc3.disconnect();
@@ -1749,34 +1832,34 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 17. s808 - 808 Bass
 // ----------------------------------------------------------------------------
 registerSound(
-  "s808",
+  's808',
   (time, value, onended) => {
     let { freq, amp, duration, plen, decay } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 40);
+    const defaultFreq = getFrequencyFromValue(value, 28);
     const defaultAmp = Number(amp ?? 1);
     const defaultPlen = Number(plen ?? 0.2);
     const defaultLen = Number(decay ?? value.len ?? 1.0);
     const clipDur = duration - 0.01;
 
     const osc1 = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     const osc2 = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * 2,
     });
     const osc3 = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * 3,
     });
 
@@ -1801,7 +1884,7 @@ registerSound(
     osc2.connect(g2);
     osc3.connect(g3);
 
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     g1.connect(shaper);
@@ -1822,7 +1905,7 @@ registerSound(
     osc2.stop(time + duration - 0.001);
     osc3.stop(time + duration - 0.001);
 
-    osc1.addEventListener("ended", () => {
+    osc1.addEventListener('ended', () => {
       osc1.disconnect();
       osc2.disconnect();
       osc3.disconnect();
@@ -1843,34 +1926,34 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 18. dist808 - Distorted 808 Bass
 // ----------------------------------------------------------------------------
 registerSound(
-  "dist808",
+  'dist808',
   (time, value, onended) => {
     let { freq, amp, duration, plen, decay } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 40);
+    const defaultFreq = getFrequencyFromValue(value, 28);
     const defaultAmp = Number(amp ?? 1);
     const defaultPlen = Number(plen ?? 0.05);
     const defaultLen = Number(decay ?? value.len ?? 1.0);
     const clipDur = duration - 0.01;
 
     const osc1 = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     const osc2 = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * 2,
     });
     const osc3 = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * 3,
     });
 
@@ -1895,8 +1978,8 @@ registerSound(
     osc2.connect(g2);
     osc3.connect(g3);
 
-    const xoverShaper = waveShaperNode(ctx, "crossover", 1.0);
-    const tanhShaper = waveShaperNode(ctx, "tanh");
+    const xoverShaper = waveShaperNode(ctx, 'crossover', 1.0);
+    const tanhShaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     g1.connect(xoverShaper);
@@ -1918,7 +2001,7 @@ registerSound(
     osc2.stop(time + duration - 0.001);
     osc3.stop(time + duration - 0.001);
 
-    osc1.addEventListener("ended", () => {
+    osc1.addEventListener('ended', () => {
       osc1.disconnect();
       osc2.disconnect();
       osc3.disconnect();
@@ -1940,14 +2023,14 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 19. randhit - Random Multitone Hit
 // ----------------------------------------------------------------------------
 registerSound(
-  "randhit",
+  'randhit',
   (time, value, onended) => {
     let { amp, duration, decay } = value;
     const ctx = getAudioContext();
@@ -1956,12 +2039,21 @@ registerSound(
     const defaultLen = Number(decay ?? value.len ?? 1.0);
     const clipDur = duration - 0.01;
 
+    const defaultFreq = getFrequencyFromValue(value, 60);
+    const ratio =
+      value.note !== undefined || value.freq !== undefined
+        ? defaultFreq / 261.63
+        : 1;
+
     const oscs = [];
     const mixer = new GainNode(ctx, { gain: 1 / 18 });
 
     for (let i = 0; i < 18; i++) {
-      const baseF = 20 + ((i * 683) % 11980);
-      const osc = new OscillatorNode(ctx, { type: "sine", frequency: baseF });
+      const baseF = Math.max(
+        10,
+        Math.min(22000, (20 + ((i * 683) % 11980)) * ratio),
+      );
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: baseF });
       osc.frequency.setValueAtTime(baseF * 4, time);
       osc.frequency.exponentialRampToValueAtTime(baseF * 20, time + 0.01);
       osc.frequency.exponentialRampToValueAtTime(baseF * 2, time + defaultLen);
@@ -1971,7 +2063,7 @@ registerSound(
       oscs.push(osc);
     }
 
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     mixer.connect(shaper);
@@ -1982,7 +2074,7 @@ registerSound(
     masterGain.gain.exponentialRampToValueAtTime(0.0001, time + defaultLen);
     masterGain.gain.linearRampToValueAtTime(0, time + clipDur);
 
-    oscs[0].addEventListener("ended", () => {
+    oscs[0].addEventListener('ended', () => {
       oscs.forEach((o) => {
         try {
           o.disconnect();
@@ -2005,14 +2097,14 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 20. boom - Hashed Sub Boom
 // ----------------------------------------------------------------------------
 registerSound(
-  "boom",
+  'boom',
   (time, value, onended) => {
     let { amp, duration, plen, decay } = value;
     const ctx = getAudioContext();
@@ -2022,12 +2114,21 @@ registerSound(
     const defaultLen = Number(decay ?? value.len ?? 1.0);
     const clipDur = duration - 0.01;
 
+    const defaultFreq = getFrequencyFromValue(value, 60);
+    const ratio =
+      value.note !== undefined || value.freq !== undefined
+        ? defaultFreq / 261.63
+        : 1;
+
     const oscs = [];
     const mixer = new GainNode(ctx, { gain: 1 / 18 });
 
     for (let i = 0; i < 18; i++) {
-      const baseF = 20 + ((i * 997) % 11980);
-      const osc = new OscillatorNode(ctx, { type: "sine", frequency: baseF });
+      const baseF = Math.max(
+        10,
+        Math.min(22000, (20 + ((i * 997) % 11980)) * ratio),
+      );
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: baseF });
       osc.frequency.setValueAtTime(baseF * 4, time);
       osc.frequency.exponentialRampToValueAtTime(baseF * 10, time + 0.01);
       osc.frequency.exponentialRampToValueAtTime(baseF * 2, time + defaultPlen);
@@ -2037,7 +2138,7 @@ registerSound(
       oscs.push(osc);
     }
 
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     mixer.connect(shaper);
@@ -2048,7 +2149,7 @@ registerSound(
     masterGain.gain.exponentialRampToValueAtTime(0.0001, time + defaultLen);
     masterGain.gain.linearRampToValueAtTime(0, time + clipDur);
 
-    oscs[0].addEventListener("ended", () => {
+    oscs[0].addEventListener('ended', () => {
       oscs.forEach((o) => {
         try {
           o.disconnect();
@@ -2071,14 +2172,14 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 21. beam - Laser / Beam FX
 // ----------------------------------------------------------------------------
 registerSound(
-  "beam",
+  'beam',
   (time, value, onended) => {
     let { amp, duration, decay } = value;
     const ctx = getAudioContext();
@@ -2087,13 +2188,22 @@ registerSound(
     const defaultLen = Number(decay ?? value.len ?? 1.0);
     const clipDur = duration - 0.01;
 
+    const defaultFreq = getFrequencyFromValue(value, 60);
+    const ratio =
+      value.note !== undefined || value.freq !== undefined
+        ? defaultFreq / 261.63
+        : 1;
+
     const oscs = [];
     const mixer = new GainNode(ctx, { gain: 1 / 18 });
 
     for (let i = 0; i < 18; i++) {
-      const baseF = 20 + ((i * 443) % 11980);
+      const baseF = Math.max(
+        10,
+        Math.min(22000, (20 + ((i * 443) % 11980)) * ratio),
+      );
       const osc = new OscillatorNode(ctx, {
-        type: "sine",
+        type: 'sine',
         frequency: baseF * 2.4,
       });
       osc.frequency.setValueAtTime(baseF * 2.4, time);
@@ -2107,7 +2217,7 @@ registerSound(
       oscs.push(osc);
     }
 
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     mixer.connect(shaper);
@@ -2118,7 +2228,7 @@ registerSound(
     masterGain.gain.exponentialRampToValueAtTime(0.0001, time + defaultLen);
     masterGain.gain.linearRampToValueAtTime(0, time + clipDur);
 
-    oscs[0].addEventListener("ended", () => {
+    oscs[0].addEventListener('ended', () => {
       oscs.forEach((o) => {
         try {
           o.disconnect();
@@ -2141,19 +2251,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 22. knife - Metallic Comb Slices
 // ----------------------------------------------------------------------------
 registerSound(
-  "knife",
+  'knife',
   (time, value, onended) => {
     let { freq, amp, duration, decay } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 88);
+    const defaultFreq = getFrequencyFromValue(value, 41);
     const defaultAmp = Number(amp ?? 1);
     const defaultLen = Number(decay ?? value.len ?? 1.0);
     const clipDur = duration - 0.01;
@@ -2169,7 +2279,7 @@ registerSound(
           Math.min(8000, 20 + Math.abs(Math.tan(Math.pow(norm, 4))) * 2000),
         ) *
         (defaultFreq / 88);
-      const osc = new OscillatorNode(ctx, { type: "sine", frequency: baseF });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: baseF });
       osc.connect(mixer);
       osc.start(time);
       osc.stop(time + duration - 0.001);
@@ -2178,14 +2288,14 @@ registerSound(
 
     const comb = combFilterNode(ctx, 1 / 100, 0.4);
     const rlpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: 12000,
       Q: 2.0,
     });
     rlpf.frequency.setValueAtTime(12000, time);
     rlpf.frequency.exponentialRampToValueAtTime(1000, time + defaultLen / 2);
 
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     mixer.connect(comb.input);
@@ -2199,7 +2309,7 @@ registerSound(
     masterGain.gain.linearRampToValueAtTime(0, time + 0.11 + defaultLen);
     masterGain.gain.linearRampToValueAtTime(0, time + clipDur);
 
-    oscs[0].addEventListener("ended", () => {
+    oscs[0].addEventListener('ended', () => {
       oscs.forEach((o) => {
         try {
           o.disconnect();
@@ -2224,19 +2334,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 23. perc2 - Pitch Swept Percussion
 // ----------------------------------------------------------------------------
 registerSound(
-  "perc2",
+  'perc2',
   (time, value, onended) => {
     let { freq, amp, duration, plen, prate, attack, decay } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 60);
+    const defaultFreq = getFrequencyFromValue(value, 35);
     const defaultAmp = Number(amp ?? 1);
     const defaultPlen = Number(plen ?? 0.01);
     const defaultPrate = Number(prate ?? 2);
@@ -2245,13 +2355,13 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const mainOsc = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * defaultPrate,
     });
     mainOsc.frequency.setValueAtTime(defaultFreq * defaultPrate, time);
     mainOsc.frequency.linearRampToValueAtTime(defaultFreq, time + defaultPlen);
 
-    const clickOsc = new OscillatorNode(ctx, { type: "sine", frequency: 1000 });
+    const clickOsc = new OscillatorNode(ctx, { type: 'sine', frequency: 1000 });
     clickOsc.frequency.setValueAtTime(1000, time);
     clickOsc.frequency.linearRampToValueAtTime(defaultFreq, time + defaultPlen);
 
@@ -2260,7 +2370,7 @@ registerSound(
     clickGain.gain.linearRampToValueAtTime(0.5, time + 0.001);
     clickGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.006);
 
-    const shaper = waveShaperNode(ctx, "softclip");
+    const shaper = waveShaperNode(ctx, 'softclip');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     mainOsc.connect(shaper);
@@ -2282,7 +2392,7 @@ registerSound(
     mainOsc.stop(time + duration - 0.001);
     clickOsc.stop(time + duration - 0.001);
 
-    mainOsc.addEventListener("ended", () => {
+    mainOsc.addEventListener('ended', () => {
       mainOsc.disconnect();
       clickOsc.disconnect();
       clickGain.disconnect();
@@ -2299,19 +2409,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 24. sinpad - Sine Ambient Pad
 // ----------------------------------------------------------------------------
 registerSound(
-  "sinpad",
+  'sinpad',
   (time, value, onended) => {
     let { freq, amp, duration, plen, prate, attack, decay, sustain } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 60);
+    const defaultFreq = getFrequencyFromValue(value, 35);
     const defaultAmp = Number(amp ?? 1);
     const defaultPlen = Number(plen ?? 0.01);
     const defaultPrate = Number(prate ?? 2);
@@ -2322,11 +2432,11 @@ registerSound(
 
     // Dual Oscillators
     const osc1 = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * defaultPrate,
     });
     const osc2 = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * defaultPrate * 0.75,
     });
 
@@ -2339,7 +2449,7 @@ registerSound(
     );
 
     // LFO modulation for subtle movement
-    const lfo = new OscillatorNode(ctx, { type: "sine", frequency: 1.0 });
+    const lfo = new OscillatorNode(ctx, { type: 'sine', frequency: 1.0 });
     const lfoGain = new GainNode(ctx, { gain: 0.15 });
     lfo.connect(lfoGain);
 
@@ -2370,7 +2480,7 @@ registerSound(
     osc2.stop(time + duration - 0.001);
     lfo.stop(time + duration - 0.001);
 
-    osc1.addEventListener("ended", () => {
+    osc1.addEventListener('ended', () => {
       osc1.disconnect();
       osc2.disconnect();
       lfo.disconnect();
@@ -2388,19 +2498,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 25. fmmod - Modulated FM Synth
 // ----------------------------------------------------------------------------
 registerSound(
-  "fmmod",
+  'fmmod',
   (time, value, onended) => {
     let { freq, amp, duration, attack, decay, index, modrate } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 40);
+    const defaultFreq = getFrequencyFromValue(value, 28);
     const defaultAmp = Number(amp ?? 1);
     const defaultAtk = Number(attack ?? value.atk ?? 0.001);
     const defaultLen = Number(decay ?? value.len ?? 0.5);
@@ -2409,11 +2519,11 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const car = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     const mod = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * defaultModrate * 2,
     });
     const modGain = new GainNode(ctx, { gain: defaultFreq * defaultIndex });
@@ -2422,7 +2532,7 @@ registerSound(
     modGain.connect(car.frequency);
 
     const hpf = new BiquadFilterNode(ctx, {
-      type: "highpass",
+      type: 'highpass',
       frequency: 60,
       Q: 0.9,
     });
@@ -2445,7 +2555,7 @@ registerSound(
     car.stop(time + duration - 0.001);
     mod.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod.disconnect();
       modGain.disconnect();
@@ -2462,14 +2572,14 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 26. fmkik - FM Kick
 // ----------------------------------------------------------------------------
 registerSound(
-  "fmkik",
+  'fmkik',
   (time, value, onended) => {
     let {
       freq,
@@ -2486,7 +2596,7 @@ registerSound(
     } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 42);
+    const defaultFreq = getFrequencyFromValue(value, 29);
     const defaultAmp = Number(amp ?? 1);
     const defaultModrate = Number(modrate ?? 1);
     const defaultIndex = Number(index ?? 0.7);
@@ -2499,14 +2609,14 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const car = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     car.frequency.setValueAtTime(defaultFreq * (1 + defaultPrate), time);
     car.frequency.exponentialRampToValueAtTime(defaultFreq, time + defaultPlen);
 
     const mod = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * defaultModrate,
     });
     const modGain = new GainNode(ctx, {
@@ -2517,7 +2627,7 @@ registerSound(
 
     // FM Click
     const clickMod = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * 4,
     });
     const clickModGain = new GainNode(ctx, { gain: defaultFreq * 4 * 80 });
@@ -2528,7 +2638,7 @@ registerSound(
     );
 
     const clickCar = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     const clickGain = new GainNode(ctx, { gain: 0 });
@@ -2540,11 +2650,11 @@ registerSound(
     clickModGain.connect(clickCar.frequency);
 
     const hpf = new BiquadFilterNode(ctx, {
-      type: "highpass",
+      type: 'highpass',
       frequency: 40,
       Q: 5.0,
     });
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     car.connect(hpf);
@@ -2568,7 +2678,7 @@ registerSound(
     clickMod.stop(time + duration - 0.001);
     clickCar.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod.disconnect();
       modGain.disconnect();
@@ -2592,14 +2702,14 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 27. fmkik2 - FM Kick 2 (Saw Modulator)
 // ----------------------------------------------------------------------------
 registerSound(
-  "fmkik2",
+  'fmkik2',
   (time, value, onended) => {
     let {
       freq,
@@ -2615,7 +2725,7 @@ registerSound(
     } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 42);
+    const defaultFreq = getFrequencyFromValue(value, 29);
     const defaultAmp = Number(amp ?? 1);
     const defaultModrate = Number(modrate ?? 1);
     const defaultIndex = Number(index ?? 15);
@@ -2627,14 +2737,14 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const car = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     car.frequency.setValueAtTime(defaultFreq * (1 + defaultPrate), time);
     car.frequency.exponentialRampToValueAtTime(defaultFreq, time + defaultPlen);
 
     const mod = new OscillatorNode(ctx, {
-      type: "sawtooth",
+      type: 'sawtooth',
       frequency: defaultFreq * defaultModrate,
     });
     const modGain = new GainNode(ctx, {
@@ -2644,11 +2754,11 @@ registerSound(
     modGain.connect(car.frequency);
 
     const hpf = new BiquadFilterNode(ctx, {
-      type: "highpass",
+      type: 'highpass',
       frequency: 30,
       Q: 5.0,
     });
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     car.connect(hpf);
@@ -2666,7 +2776,7 @@ registerSound(
     car.stop(time + duration - 0.001);
     mod.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod.disconnect();
       modGain.disconnect();
@@ -2684,14 +2794,14 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 28. fmsn - FM Snare (Pulse Mod + Noise)
 // ----------------------------------------------------------------------------
 registerSound(
-  "fmsn",
+  'fmsn',
   (time, value, onended) => {
     let {
       freq,
@@ -2707,7 +2817,7 @@ registerSound(
     } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 40);
+    const defaultFreq = getFrequencyFromValue(value, 28);
     const defaultAmp = Number(amp ?? 1);
     const defaultModrate = Number(modrate ?? 3);
     const defaultIndex = Number(index ?? 0.5);
@@ -2719,14 +2829,14 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const car = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     car.frequency.setValueAtTime(defaultFreq * (1 + defaultPrate), time);
     car.frequency.exponentialRampToValueAtTime(defaultFreq, time + defaultPlen);
 
     const mod = new OscillatorNode(ctx, {
-      type: "square",
+      type: 'square',
       frequency: defaultFreq * defaultModrate,
     });
     const modGain = new GainNode(ctx, {
@@ -2742,7 +2852,7 @@ registerSound(
     } = whiteNoiseNode(ctx, defaultNoiseamp);
 
     const hpf = new BiquadFilterNode(ctx, {
-      type: "highpass",
+      type: 'highpass',
       frequency: 100,
       Q: 2.0,
     });
@@ -2765,7 +2875,7 @@ registerSound(
     mod.stop(time + duration - 0.001);
     noise.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod.disconnect();
       modGain.disconnect();
@@ -2784,14 +2894,14 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 29. fmsn2 - FM Snare 2 (Saw Mod into Pulse Carrier)
 // ----------------------------------------------------------------------------
 registerSound(
-  "fmsn2",
+  'fmsn2',
   (time, value, onended) => {
     let {
       freq,
@@ -2807,7 +2917,7 @@ registerSound(
     } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 100);
+    const defaultFreq = getFrequencyFromValue(value, 43);
     const defaultAmp = Number(amp ?? 1);
     const defaultModrate = Number(modrate ?? 3);
     const defaultIndex = Number(index ?? 12);
@@ -2819,14 +2929,14 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const car = new OscillatorNode(ctx, {
-      type: "square",
+      type: 'square',
       frequency: defaultFreq,
     });
     car.frequency.setValueAtTime(defaultFreq * (1 + defaultPrate), time);
     car.frequency.exponentialRampToValueAtTime(defaultFreq, time + defaultPlen);
 
     const mod = new OscillatorNode(ctx, {
-      type: "sawtooth",
+      type: 'sawtooth',
       frequency: defaultFreq * defaultModrate,
     });
     const modGain = new GainNode(ctx, {
@@ -2836,7 +2946,7 @@ registerSound(
     modGain.connect(car.frequency);
 
     const rlpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: 8000,
       Q: 1.11,
     });
@@ -2847,14 +2957,14 @@ registerSound(
     );
 
     const rhpf = new BiquadFilterNode(ctx, {
-      type: "highpass",
+      type: 'highpass',
       frequency: 20,
       Q: 5.0,
     });
     rhpf.frequency.setValueAtTime(20, time);
     rhpf.frequency.exponentialRampToValueAtTime(200, time + 0.01);
 
-    const shaper = waveShaperNode(ctx, "softclip");
+    const shaper = waveShaperNode(ctx, 'softclip');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     car.connect(rlpf);
@@ -2873,7 +2983,7 @@ registerSound(
     car.stop(time + duration - 0.001);
     mod.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod.disconnect();
       modGain.disconnect();
@@ -2892,14 +3002,14 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 30. fmfilter - FM Filter Sweep
 // ----------------------------------------------------------------------------
 registerSound(
-  "fmfilter",
+  'fmfilter',
   (time, value, onended) => {
     let {
       freq,
@@ -2916,7 +3026,7 @@ registerSound(
     } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 40);
+    const defaultFreq = getFrequencyFromValue(value, 28);
     const defaultAmp = Number(amp ?? 1);
     const defaultModrate = Number(modrate ?? 1);
     const defaultIndex = Number(index ?? 1);
@@ -2929,14 +3039,14 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const car = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     car.frequency.setValueAtTime(defaultFreq * (1 + defaultPrate), time);
     car.frequency.exponentialRampToValueAtTime(defaultFreq, time + defaultPlen);
 
     const mod = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * defaultModrate,
     });
     const modGain = new GainNode(ctx, {
@@ -2946,7 +3056,7 @@ registerSound(
     modGain.connect(car.frequency);
 
     const rlpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: defaultCutoff,
       Q: 1 / Math.max(0.01, 1 - defaultQ),
     });
@@ -2968,7 +3078,7 @@ registerSound(
     car.stop(time + duration - 0.001);
     mod.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod.disconnect();
       modGain.disconnect();
@@ -2985,19 +3095,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 31. fmbass - Dual Mod FM Bass
 // ----------------------------------------------------------------------------
 registerSound(
-  "fmbass",
+  'fmbass',
   (time, value, onended) => {
     let { freq, amp, duration, modrate, index, decay } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 110);
+    const defaultFreq = getFrequencyFromValue(value, 45);
     const defaultAmp = Number(amp ?? 1);
     const defaultModrate = Number(modrate ?? 1.5);
     const defaultIndex = Number(index ?? 1);
@@ -3005,18 +3115,18 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const car = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
 
     const mod1 = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * defaultModrate,
     });
     const mod1Gain = new GainNode(ctx, { gain: defaultIndex * 16 * 0.9 * 20 });
 
     const mod2 = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * defaultModrate * 4,
     });
     const mod2Gain = new GainNode(ctx, { gain: defaultIndex * 16 * 1.3 * 20 });
@@ -3043,7 +3153,7 @@ registerSound(
     mod1.stop(time + duration - 0.001);
     mod2.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod1.disconnect();
       mod1Gain.disconnect();
@@ -3062,14 +3172,14 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 32. fmpad - Stereo FM Pad
 // ----------------------------------------------------------------------------
 registerSound(
-  "fmpad",
+  'fmpad',
   (time, value, onended) => {
     let {
       freq,
@@ -3086,7 +3196,7 @@ registerSound(
     } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 40);
+    const defaultFreq = getFrequencyFromValue(value, 28);
     const defaultAmp = Number(amp ?? 1);
     const defaultModrate = Number(modrate ?? 0.5);
     const defaultIndex = Number(index ?? 1);
@@ -3100,16 +3210,16 @@ registerSound(
 
     // Left and Right Carriers with Detune
     const carL = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq + defaultDetune * 0.1,
     });
     const carR = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq - defaultDetune * 0.1,
     });
 
     const mod = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * defaultModrate,
     });
     const modGain = new GainNode(ctx, {
@@ -3120,7 +3230,7 @@ registerSound(
     modGain.connect(carR.frequency);
 
     const rlpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: defaultCutoff,
       Q: 1 / Math.max(0.01, 1 - defaultQ),
     });
@@ -3155,7 +3265,7 @@ registerSound(
     carR.stop(time + duration - 0.001);
     mod.stop(time + duration - 0.001);
 
-    carL.addEventListener("ended", () => {
+    carL.addEventListener('ended', () => {
       carL.disconnect();
       carR.disconnect();
       mod.disconnect();
@@ -3174,14 +3284,14 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 33. fmsaw - Saw FM Synth
 // ----------------------------------------------------------------------------
 registerSound(
-  "fmsaw",
+  'fmsaw',
   (time, value, onended) => {
     let {
       freq,
@@ -3197,7 +3307,7 @@ registerSound(
     } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 40);
+    const defaultFreq = getFrequencyFromValue(value, 28);
     const defaultAmp = Number(amp ?? 1);
     const defaultModrate = Number(modrate ?? 1);
     const defaultAtk = Number(attack ?? value.atk ?? 0.01);
@@ -3209,16 +3319,16 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const carL = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq + defaultDetune,
     });
     const carR = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq - defaultDetune,
     });
 
     const mod = new OscillatorNode(ctx, {
-      type: "sawtooth",
+      type: 'sawtooth',
       frequency: defaultFreq * defaultModrate,
     });
     const modGain = new GainNode(ctx, { gain: defaultFreq * defaultModrate });
@@ -3227,7 +3337,7 @@ registerSound(
     modGain.connect(carR.frequency);
 
     const rlpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: defaultCutoff,
       Q: 1 / Math.max(0.01, 1 - defaultQ),
     });
@@ -3259,7 +3369,7 @@ registerSound(
     carR.stop(time + duration - 0.001);
     mod.stop(time + duration - 0.001);
 
-    carL.addEventListener("ended", () => {
+    carL.addEventListener('ended', () => {
       carL.disconnect();
       carR.disconnect();
       mod.disconnect();
@@ -3278,20 +3388,20 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 34. fmperc - FM Percussion
 // ----------------------------------------------------------------------------
 registerSound(
-  "fmperc",
+  'fmperc',
   (time, value, onended) => {
     let { freq, amp, duration, modrate, index, plen, prate, attack, decay } =
       value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 40);
+    const defaultFreq = getFrequencyFromValue(value, 28);
     const defaultAmp = Number(amp ?? 1);
     const defaultModrate = Number(modrate ?? 2);
     const defaultIndex = Number(index ?? 0.5);
@@ -3302,14 +3412,14 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const car = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     car.frequency.setValueAtTime(defaultFreq * (1 + defaultPrate), time);
     car.frequency.exponentialRampToValueAtTime(defaultFreq, time + defaultPlen);
 
     const mod = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * defaultModrate,
     });
     const modGain = new GainNode(ctx, {
@@ -3335,7 +3445,7 @@ registerSound(
     car.stop(time + duration - 0.001);
     mod.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod.disconnect();
       modGain.disconnect();
@@ -3351,20 +3461,20 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 35. fmkey - FM Electric Keys
 // ----------------------------------------------------------------------------
 registerSound(
-  "fmkey",
+  'fmkey',
   (time, value, onended) => {
     let { freq, amp, duration, modrate, index, plen, prate, attack, decay, q } =
       value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 40);
+    const defaultFreq = getFrequencyFromValue(value, 28);
     const defaultAmp = Number(amp ?? 1);
     const defaultModrate = Number(modrate ?? 1);
     const defaultIndex = Number(index ?? 2);
@@ -3377,11 +3487,11 @@ registerSound(
 
     // Slight stereo detuning simulation
     const carL = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     const carR = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq + 2,
     });
 
@@ -3394,7 +3504,7 @@ registerSound(
     });
 
     const mod = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * defaultModrate * 2,
     });
     const modGain = new GainNode(ctx, {
@@ -3405,7 +3515,7 @@ registerSound(
     modGain.connect(carR.frequency);
 
     const rlpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: 12000,
       Q: 1 / Math.max(0.01, 1 - defaultQ),
     });
@@ -3436,7 +3546,7 @@ registerSound(
     carR.stop(time + duration - 0.001);
     mod.stop(time + duration - 0.001);
 
-    carL.addEventListener("ended", () => {
+    carL.addEventListener('ended', () => {
       carL.disconnect();
       carR.disconnect();
       mod.disconnect();
@@ -3455,20 +3565,20 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 36. fmcp - FM Clap
 // ----------------------------------------------------------------------------
 registerSound(
-  "fmcp",
+  'fmcp',
   (time, value, onended) => {
     let { freq, amp, duration, modrate, index, plen, prate, attack, decay, q } =
       value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 600);
+    const defaultFreq = getFrequencyFromValue(value, 74);
     const defaultAmp = Number(amp ?? 1.5);
     const defaultModrate = Number(modrate ?? 4);
     const defaultIndex = Number(index ?? 24);
@@ -3480,12 +3590,12 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const fr = 1000;
-    const car = new OscillatorNode(ctx, { type: "sine", frequency: fr });
+    const car = new OscillatorNode(ctx, { type: 'sine', frequency: fr });
     car.frequency.setValueAtTime(fr * (1 + defaultPrate), time);
     car.frequency.exponentialRampToValueAtTime(fr, time + defaultPlen);
 
     const mod = new OscillatorNode(ctx, {
-      type: "sawtooth",
+      type: 'sawtooth',
       frequency: fr * defaultModrate,
     });
     const modGain = new GainNode(ctx, {
@@ -3495,7 +3605,7 @@ registerSound(
     modGain.connect(car.frequency);
 
     const rlpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: 10000,
       Q: 1 / Math.max(0.01, 1 - defaultQ),
     });
@@ -3503,11 +3613,11 @@ registerSound(
     rlpf.frequency.exponentialRampToValueAtTime(6000, time + 0.5);
 
     const rhpf = new BiquadFilterNode(ctx, {
-      type: "highpass",
+      type: 'highpass',
       frequency: defaultFreq,
       Q: 3.33,
     });
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     car.connect(rlpf);
@@ -3526,7 +3636,7 @@ registerSound(
     car.stop(time + duration - 0.001);
     mod.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod.disconnect();
       modGain.disconnect();
@@ -3545,19 +3655,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 37. fmhat - FM Closed Hat
 // ----------------------------------------------------------------------------
 registerSound(
-  "fmhat",
+  'fmhat',
   (time, value, onended) => {
     let { freq, amp, duration, modrate, index, attack, decay, sustain } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 4000);
+    const defaultFreq = getFrequencyFromValue(value, 107);
     const defaultAmp = Number(amp ?? 1);
     const defaultModrate = Number(modrate ?? 4.1);
     const defaultIndex = Number(index ?? 24.1);
@@ -3567,9 +3677,9 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const fr = 2000;
-    const car = new OscillatorNode(ctx, { type: "sine", frequency: fr });
+    const car = new OscillatorNode(ctx, { type: 'sine', frequency: fr });
     const mod = new OscillatorNode(ctx, {
-      type: "sawtooth",
+      type: 'sawtooth',
       frequency: fr * defaultModrate,
     });
     const modGain = new GainNode(ctx, {
@@ -3580,7 +3690,7 @@ registerSound(
     modGain.connect(car.frequency);
 
     const rhpf = new BiquadFilterNode(ctx, {
-      type: "highpass",
+      type: 'highpass',
       frequency: defaultFreq,
       Q: 3.33,
     });
@@ -3606,7 +3716,7 @@ registerSound(
     car.stop(time + duration - 0.001);
     mod.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod.disconnect();
       modGain.disconnect();
@@ -3623,19 +3733,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 38. fmhh - FM Short Hi-Hat
 // ----------------------------------------------------------------------------
 registerSound(
-  "fmhh",
+  'fmhh',
   (time, value, onended) => {
     let { freq, amp, duration, modrate, index, attack, decay, sustain } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 5000);
+    const defaultFreq = getFrequencyFromValue(value, 111);
     const defaultAmp = Number(amp ?? 0.9);
     const defaultModrate = Number(modrate ?? 4.1);
     const defaultIndex = Number(index ?? 24.1);
@@ -3645,9 +3755,9 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const fr = 4000;
-    const car = new OscillatorNode(ctx, { type: "sine", frequency: fr });
+    const car = new OscillatorNode(ctx, { type: 'sine', frequency: fr });
     const mod = new OscillatorNode(ctx, {
-      type: "sawtooth",
+      type: 'sawtooth',
       frequency: fr * defaultModrate,
     });
     const modGain = new GainNode(ctx, {
@@ -3658,7 +3768,7 @@ registerSound(
     modGain.connect(car.frequency);
 
     const rhpf = new BiquadFilterNode(ctx, {
-      type: "highpass",
+      type: 'highpass',
       frequency: defaultFreq,
       Q: 3.33,
     });
@@ -3681,7 +3791,7 @@ registerSound(
     car.stop(time + duration - 0.001);
     mod.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod.disconnect();
       modGain.disconnect();
@@ -3698,19 +3808,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 39. swub - Wobble Bass
 // ----------------------------------------------------------------------------
 registerSound(
-  "swub",
+  'swub',
   (time, value, onended) => {
     let { freq, amp, duration, modrate, decay, q } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 80);
+    const defaultFreq = getFrequencyFromValue(value, 39);
     const defaultAmp = Number(amp ?? 1);
     const defaultModrate = Number(modrate ?? 0.5);
     const defaultLen = Number(decay ?? value.len ?? 1.0);
@@ -3723,7 +3833,7 @@ registerSound(
 
     partials.forEach((p) => {
       const f = p * defaultFreq * defaultModrate + 1;
-      const osc = new OscillatorNode(ctx, { type: "sine", frequency: f });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: f });
       osc.connect(mixer);
       osc.start(time);
       osc.stop(time + duration - 0.001);
@@ -3732,7 +3842,7 @@ registerSound(
 
     // Wobble LPF sweep
     const lpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: 200,
       Q: 1 / Math.max(0.01, 1 - defaultQ),
     });
@@ -3740,7 +3850,7 @@ registerSound(
     lpf.frequency.linearRampToValueAtTime(5000, time + defaultLen * 0.5);
     lpf.frequency.linearRampToValueAtTime(200, time + defaultLen);
 
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     mixer.connect(lpf);
@@ -3752,7 +3862,7 @@ registerSound(
     masterGain.gain.linearRampToValueAtTime(0, time + defaultLen);
     masterGain.gain.linearRampToValueAtTime(0, time + clipDur);
 
-    oscs[0].addEventListener("ended", () => {
+    oscs[0].addEventListener('ended', () => {
       oscs.forEach((o) => {
         try {
           o.disconnect();
@@ -3776,19 +3886,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 40. swub2 - Wobble Bass 2 (Comb + Distortion)
 // ----------------------------------------------------------------------------
 registerSound(
-  "swub2",
+  'swub2',
   (time, value, onended) => {
     let { freq, amp, duration, modrate, index, decay, cutoff, q } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 80);
+    const defaultFreq = getFrequencyFromValue(value, 39);
     const defaultAmp = Number(amp ?? 1);
     const defaultModrate = Number(modrate ?? 5);
     const defaultIndex = Number(index ?? 32);
@@ -3802,7 +3912,7 @@ registerSound(
     const mixer = new GainNode(ctx, { gain: 1 / mults.length });
 
     const mod = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * defaultModrate,
     });
     const modGain = new GainNode(ctx, { gain: defaultFreq * defaultIndex });
@@ -3810,7 +3920,7 @@ registerSound(
 
     mults.forEach((m) => {
       const osc = new OscillatorNode(ctx, {
-        type: "sine",
+        type: 'sine',
         frequency: defaultFreq * m,
       });
       modGain.connect(osc.frequency);
@@ -3821,11 +3931,11 @@ registerSound(
     });
 
     const comb = combFilterNode(ctx, 0.1, 0.5);
-    const softclip = waveShaperNode(ctx, "softclip");
-    const xover = waveShaperNode(ctx, "crossover", 0.5);
+    const softclip = waveShaperNode(ctx, 'softclip');
+    const xover = waveShaperNode(ctx, 'crossover', 0.5);
 
     const rlpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: 100,
       Q: 1 / Math.max(0.01, 1 - defaultQ),
     });
@@ -3849,7 +3959,7 @@ registerSound(
     mod.start(time);
     mod.stop(time + duration - 0.001);
 
-    oscs[0].addEventListener("ended", () => {
+    oscs[0].addEventListener('ended', () => {
       oscs.forEach((o) => {
         try {
           o.disconnect();
@@ -3878,19 +3988,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 41. sbass - Distorted Dual FM Bass
 // ----------------------------------------------------------------------------
 registerSound(
-  "sbass",
+  'sbass',
   (time, value, onended) => {
     let { freq, amp, duration, modrate, index, decay } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 32);
+    const defaultFreq = getFrequencyFromValue(value, 24);
     const defaultAmp = Number(amp ?? 1);
     const defaultModrate = Number(modrate ?? 8);
     const defaultIndex = Number(index ?? 3);
@@ -3898,11 +4008,11 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const car = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     const mod = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq * defaultModrate,
     });
     const modGain = new GainNode(ctx, { gain: defaultFreq * defaultIndex * 4 });
@@ -3910,8 +4020,8 @@ registerSound(
     mod.connect(modGain);
     modGain.connect(car.frequency);
 
-    const xover = waveShaperNode(ctx, "crossover", 1.0);
-    const tanhShaper = waveShaperNode(ctx, "tanh");
+    const xover = waveShaperNode(ctx, 'crossover', 1.0);
+    const tanhShaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     car.connect(xover);
@@ -3929,7 +4039,7 @@ registerSound(
     car.stop(time + duration - 0.001);
     mod.stop(time + duration - 0.001);
 
-    car.addEventListener("ended", () => {
+    car.addEventListener('ended', () => {
       car.disconnect();
       mod.disconnect();
       modGain.disconnect();
@@ -3947,19 +4057,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 42. modsaw - Modulated Saw Lead
 // ----------------------------------------------------------------------------
 registerSound(
-  "modsaw",
+  'modsaw',
   (time, value, onended) => {
     let { freq, amp, duration, plen, prate, attack, decay, cutoff, q } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 440);
+    const defaultFreq = getFrequencyFromValue(value, 69);
     const defaultAmp = Number(amp ?? 0.9);
     const defaultPlen = Number(plen ?? 0.001);
     const defaultPrate = Number(prate ?? 2);
@@ -3970,14 +4080,14 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const saw = new OscillatorNode(ctx, {
-      type: "sawtooth",
+      type: 'sawtooth',
       frequency: defaultFreq,
     });
     saw.frequency.setValueAtTime(defaultFreq * (1 + defaultPrate), time);
     saw.frequency.exponentialRampToValueAtTime(defaultFreq, time + defaultPlen);
 
     const rlpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: defaultCutoff,
       Q: 1 / Math.max(0.01, 1 - defaultQ),
     });
@@ -3999,7 +4109,7 @@ registerSound(
     saw.start(time);
     saw.stop(time + duration - 0.001);
 
-    saw.addEventListener("ended", () => {
+    saw.addEventListener('ended', () => {
       saw.disconnect();
       rlpf.disconnect();
       masterGain.disconnect();
@@ -4013,20 +4123,20 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 43. detsaw - Detuned Dual Saw
 // ----------------------------------------------------------------------------
 registerSound(
-  "detsaw",
+  'detsaw',
   (time, value, onended) => {
     let { freq, amp, duration, attack, decay, sustain, detune, cutoff, q } =
       value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 440);
+    const defaultFreq = getFrequencyFromValue(value, 69);
     const defaultAmp = Number(amp ?? 0.9);
     const defaultAtk = Number(attack ?? value.atk ?? 0.01);
     const defaultLen = Number(decay ?? value.len ?? 2.0);
@@ -4037,16 +4147,16 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const sawL = new OscillatorNode(ctx, {
-      type: "sawtooth",
+      type: 'sawtooth',
       frequency: defaultFreq + defaultDetune * defaultFreq,
     });
     const sawR = new OscillatorNode(ctx, {
-      type: "sawtooth",
+      type: 'sawtooth',
       frequency: defaultFreq - defaultDetune * defaultFreq,
     });
 
     const rlpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: defaultCutoff,
       Q: 1 / Math.max(0.01, 1 - defaultQ),
     });
@@ -4072,7 +4182,7 @@ registerSound(
     sawL.stop(time + duration - 0.001);
     sawR.stop(time + duration - 0.001);
 
-    sawL.addEventListener("ended", () => {
+    sawL.addEventListener('ended', () => {
       sawL.disconnect();
       sawR.disconnect();
       rlpf.disconnect();
@@ -4088,14 +4198,14 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 44. sawpad - 8-Oscillator SuperSaw Pad
 // ----------------------------------------------------------------------------
 registerSound(
-  "sawpad",
+  'sawpad',
   (time, value, onended) => {
     let {
       freq,
@@ -4111,7 +4221,7 @@ registerSound(
     } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 440);
+    const defaultFreq = getFrequencyFromValue(value, 69);
     const defaultAmp = Number(amp ?? 1);
     const defaultAtk = Number(attack ?? value.atk ?? 0.01);
     const defaultLen = Number(decay ?? value.len ?? 2.0);
@@ -4130,7 +4240,7 @@ registerSound(
       const scale = i % 2 === 0 ? 1 : -1;
       const det = (i + 1) * scale * defaultDetune * defaultFreq;
       const osc = new OscillatorNode(ctx, {
-        type: "sawtooth",
+        type: 'sawtooth',
         frequency: defaultFreq + det,
       });
       osc.connect(mixer);
@@ -4140,7 +4250,7 @@ registerSound(
     }
 
     const rlpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: defaultLpfstart,
       Q: 1 / Math.max(0.01, 1 - defaultQ),
     });
@@ -4166,7 +4276,7 @@ registerSound(
     );
     masterGain.gain.linearRampToValueAtTime(0, time + clipDur);
 
-    oscs[0].addEventListener("ended", () => {
+    oscs[0].addEventListener('ended', () => {
       oscs.forEach((o) => {
         try {
           o.disconnect();
@@ -4189,19 +4299,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 45. chirp - High-Speed Pitch Chirp
 // ----------------------------------------------------------------------------
 registerSound(
-  "chirp",
+  'chirp',
   (time, value, onended) => {
     let { freq, amp, duration, plen, prate, attack, decay, cutoff, q } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 40);
+    const defaultFreq = getFrequencyFromValue(value, 28);
     const defaultAmp = Number(amp ?? 0.9);
     const defaultPlen = Number(plen ?? 0.1);
     const defaultPrate = Number(prate ?? 300);
@@ -4212,14 +4322,14 @@ registerSound(
     const clipDur = duration - 0.01;
 
     const osc = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     osc.frequency.setValueAtTime(defaultFreq * (1 + defaultPrate), time);
     osc.frequency.exponentialRampToValueAtTime(defaultFreq, time + defaultPlen);
 
     const rlpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: defaultCutoff,
       Q: 1 / Math.max(0.01, 1 - defaultQ),
     });
@@ -4227,11 +4337,11 @@ registerSound(
     rlpf.frequency.exponentialRampToValueAtTime(20, time + defaultLen);
 
     const hpf = new BiquadFilterNode(ctx, {
-      type: "highpass",
+      type: 'highpass',
       frequency: 30,
       Q: 1.0,
     });
-    const shaper = waveShaperNode(ctx, "tanh");
+    const shaper = waveShaperNode(ctx, 'tanh');
     const masterGain = new GainNode(ctx, { gain: 0 });
 
     osc.connect(rlpf);
@@ -4253,7 +4363,7 @@ registerSound(
     osc.start(time);
     osc.stop(time + duration - 0.001);
 
-    osc.addEventListener("ended", () => {
+    osc.addEventListener('ended', () => {
       osc.disconnect();
       rlpf.disconnect();
       hpf.disconnect();
@@ -4269,22 +4379,27 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 46. chirp2 - Noise Chirp Sweep
 // ----------------------------------------------------------------------------
 registerSound(
-  "chirp2",
+  'chirp2',
   (time, value, onended) => {
-    let { amp, duration, attack, decay, cutoff, q } = value;
+    let { freq, amp, duration, attack, decay, cutoff, q } = value;
     const ctx = getAudioContext();
 
+    const defaultFreq = getFrequencyFromValue(value, 28);
+    const ratio =
+      value.note !== undefined || value.freq !== undefined
+        ? defaultFreq / 41.2
+        : 1;
     const defaultAmp = Number(amp ?? 0.9);
     const defaultAtk = Number(attack ?? value.atk ?? 0.01);
     const defaultLen = Number(decay ?? value.len ?? 1.0);
-    const defaultCutoff = Number(cutoff ?? 12000);
+    const defaultCutoff = Math.min(22000, Number(cutoff ?? 12000) * ratio);
     const defaultQ = Number(q ?? 1.0);
     const clipDur = duration - 0.01;
 
@@ -4295,7 +4410,7 @@ registerSound(
     } = whiteNoiseNode(ctx, 0.3);
 
     const rlpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: defaultCutoff,
       Q: 1 / Math.max(0.01, 1 - defaultQ),
     });
@@ -4317,7 +4432,7 @@ registerSound(
     noise.start(time);
     noise.stop(time + duration - 0.001);
 
-    noise.addEventListener("ended", () => {
+    noise.addEventListener('ended', () => {
       disconnectNoise();
       rlpf.disconnect();
       masterGain.disconnect();
@@ -4331,19 +4446,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 47. mplk - Metallic Pluck (Klang Additive Synthesis)
 // ----------------------------------------------------------------------------
 registerSound(
-  "mplk",
+  'mplk',
   (time, value, onended) => {
     let { freq, amp, duration, plen, prate, attack, decay, q } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 440);
+    const defaultFreq = getFrequencyFromValue(value, 69);
     const defaultAmp = Number(amp ?? 1);
     const defaultPlen = Number(plen ?? 0.01);
     const defaultPrate = Number(prate ?? 8);
@@ -4369,7 +4484,7 @@ registerSound(
 
     // Sine transient with pitch drop
     const transient = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     transient.frequency.setValueAtTime(defaultFreq * (1 + defaultPrate), time);
@@ -4381,7 +4496,7 @@ registerSound(
     transient.connect(transGain);
 
     const rlpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: 12000,
       Q: 1 / Math.max(0.01, 1 - defaultQ),
     });
@@ -4407,7 +4522,7 @@ registerSound(
     transient.start(time);
     transient.stop(time + duration - 0.001);
 
-    transient.addEventListener("ended", () => {
+    transient.addEventListener('ended', () => {
       klang.disconnect();
       transient.disconnect();
       transGain.disconnect();
@@ -4424,19 +4539,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 48. mplk2 - Metallic Pluck 2 (Ratio-Weighted Partials)
 // ----------------------------------------------------------------------------
 registerSound(
-  "mplk2",
+  'mplk2',
   (time, value, onended) => {
     let { freq, amp, duration, plen, prate, attack, decay, q } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 440);
+    const defaultFreq = getFrequencyFromValue(value, 69);
     const defaultAmp = Number(amp ?? 0.9);
     const defaultPlen = Number(plen ?? 0.01);
     const defaultPrate = Number(prate ?? 8);
@@ -4461,7 +4576,7 @@ registerSound(
     );
 
     const transient = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     transient.frequency.setValueAtTime(defaultFreq * (1 + defaultPrate), time);
@@ -4473,7 +4588,7 @@ registerSound(
     transient.connect(transGain);
 
     const rlpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: 12000,
       Q: 1 / Math.max(0.01, 1 - defaultQ),
     });
@@ -4499,7 +4614,7 @@ registerSound(
     transient.start(time);
     transient.stop(time + duration - 0.001);
 
-    transient.addEventListener("ended", () => {
+    transient.addEventListener('ended', () => {
       klang.disconnect();
       transient.disconnect();
       transGain.disconnect();
@@ -4516,19 +4631,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 49. mkey - Metallic Keys (14 Partials)
 // ----------------------------------------------------------------------------
 registerSound(
-  "mkey",
+  'mkey',
   (time, value, onended) => {
     let { freq, amp, duration, plen, prate, attack, decay, q, cutoff } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 440);
+    const defaultFreq = getFrequencyFromValue(value, 69);
     const defaultAmp = Number(amp ?? 0.9);
     const defaultPlen = Number(plen ?? 0.005);
     const defaultPrate = Number(prate ?? 8);
@@ -4555,7 +4670,7 @@ registerSound(
     );
 
     const transient = new OscillatorNode(ctx, {
-      type: "sine",
+      type: 'sine',
       frequency: defaultFreq,
     });
     transient.frequency.setValueAtTime(defaultFreq * (1 + defaultPrate), time);
@@ -4567,7 +4682,7 @@ registerSound(
     transient.connect(transGain);
 
     const rlpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: defaultCutoff,
       Q: 1 / Math.max(0.01, 1 - defaultQ),
     });
@@ -4593,7 +4708,7 @@ registerSound(
     transient.start(time);
     transient.stop(time + duration - 0.001);
 
-    transient.addEventListener("ended", () => {
+    transient.addEventListener('ended', () => {
       klang.disconnect();
       transient.disconnect();
       transGain.disconnect();
@@ -4610,19 +4725,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 50. ep - Electric Piano
 // ----------------------------------------------------------------------------
 registerSound(
-  "ep",
+  'ep',
   (time, value, onended) => {
     let { freq, amp, duration, attack, decay, sustain, q } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 440);
+    const defaultFreq = getFrequencyFromValue(value, 69);
     const defaultAmp = Number(amp ?? 0.9);
     const defaultAtk = Number(attack ?? value.atk ?? 0.01);
     const defaultLen = Number(decay ?? value.len ?? 2.0);
@@ -4668,7 +4783,7 @@ registerSound(
     klangHarm.node.connect(harmGain);
 
     const rlpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: 10000,
       Q: 1 / Math.max(0.01, 1.01 - defaultQ),
     });
@@ -4695,7 +4810,7 @@ registerSound(
     );
     masterGain.gain.linearRampToValueAtTime(0, time + clipDur);
 
-    klang.oscillators[0].addEventListener("ended", () => {
+    klang.oscillators[0].addEventListener('ended', () => {
       klang.disconnect();
       klangHarm.disconnect();
       harmGain.disconnect();
@@ -4712,19 +4827,19 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
 
 // ----------------------------------------------------------------------------
 // 51. ep2 - Electric Piano 2
 // ----------------------------------------------------------------------------
 registerSound(
-  "ep2",
+  'ep2',
   (time, value, onended) => {
     let { freq, amp, duration, attack, decay, sustain, q } = value;
     const ctx = getAudioContext();
 
-    const defaultFreq = Number(freq ?? 440);
+    const defaultFreq = getFrequencyFromValue(value, 69);
     const defaultAmp = Number(amp ?? 0.9);
     const defaultAtk = Number(attack ?? value.atk ?? 0.01);
     const defaultLen = Number(decay ?? value.len ?? 2.0);
@@ -4768,7 +4883,7 @@ registerSound(
     klangHarm.node.connect(harmGain);
 
     const rlpf = new BiquadFilterNode(ctx, {
-      type: "lowpass",
+      type: 'lowpass',
       frequency: 10000,
       Q: 1 / Math.max(0.01, 1.01 - defaultQ),
     });
@@ -4795,7 +4910,7 @@ registerSound(
     );
     masterGain.gain.linearRampToValueAtTime(0, time + clipDur);
 
-    klang.oscillators[0].addEventListener("ended", () => {
+    klang.oscillators[0].addEventListener('ended', () => {
       klang.disconnect();
       klangHarm.disconnect();
       harmGain.disconnect();
@@ -4812,5 +4927,5 @@ registerSound(
       },
     };
   },
-  { type: "synth" },
+  { type: 'synth' },
 );
