@@ -1,0 +1,17 @@
+{
+  "name": "synthdef-port",
+  "version": "1.0.0",
+  "description": "",
+  "main": "strudel-out/strudel-synthdef.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.13.1",
+  "dependencies": {
+    "@strudel/web": "^1.3.0"
+  }
+}
