@@ -68,6 +68,7 @@ class MockAudioNode {
 }
 
 class MockOscillatorNode extends MockAudioNode {
+  static instances = [];
   constructor(ctx, options = {}) {
     super(ctx);
     this.frequency = new MockAudioParam(options.frequency ?? 440);
@@ -76,6 +77,7 @@ class MockOscillatorNode extends MockAudioNode {
     this.stopped = false;
     this.listeners = {};
     this.periodicWave = null;
+    MockOscillatorNode.instances.push(this);
   }
   setPeriodicWave(pw) {
     this.periodicWave = pw;
@@ -99,9 +101,11 @@ class MockOscillatorNode extends MockAudioNode {
 }
 
 class MockGainNode extends MockAudioNode {
+  static instances = [];
   constructor(ctx, options = {}) {
     super(ctx);
     this.gain = new MockAudioParam(options.gain ?? 1);
+    MockGainNode.instances.push(this);
   }
 }
 
@@ -518,6 +522,104 @@ describe('Digitone FM Synthesis Engine', () => {
         );
         assert.ok(voice.node);
       }
+    });
+
+    it('reflects duration for note-off: stops oscillators according to duration', () => {
+      const ctx = new MockAudioContext();
+      MockOscillatorNode.instances = [];
+
+      // Test short duration: 0.1s (e.g. 16th note pattern)
+      playDigitoneSynVoice(
+        ctx,
+        0,
+        {
+          duration: 0.1,
+          algo: 1,
+        },
+        () => {}
+      );
+
+      const recentOscs = MockOscillatorNode.instances.slice(-4);
+      assert.strictEqual(recentOscs.length, 4);
+      for (const osc of recentOscs) {
+        assert.ok(osc.stopped, 'Oscillator should be scheduled to stop');
+        assert.strictEqual(
+          Math.round(osc.stopTime * 1000) / 1000,
+          0.099,
+          `Expected oscillator stopTime 0.099, got ${osc.stopTime}`
+        );
+      }
+
+      // Test ultra short duration: 0.02s
+      playDigitoneSynVoice(
+        ctx,
+        1.0,
+        {
+          duration: 0.02,
+          algo: 2,
+        },
+        () => {}
+      );
+      const ultraShortOscs = MockOscillatorNode.instances.slice(-4);
+      for (const osc of ultraShortOscs) {
+        assert.ok(osc.stopped);
+        assert.strictEqual(
+          Math.round(osc.stopTime * 1000) / 1000,
+          1.019,
+          `Expected oscillator stopTime 1.019, got ${osc.stopTime}`
+        );
+      }
+
+      // Test longer duration: 0.8s
+      playDigitoneSynVoice(
+        ctx,
+        0,
+        {
+          duration: 0.8,
+          algo: 3,
+        },
+        () => {}
+      );
+      const longOscs = MockOscillatorNode.instances.slice(-4);
+      for (const osc of longOscs) {
+        assert.ok(osc.stopped);
+        assert.strictEqual(
+          Math.round(osc.stopTime * 1000) / 1000,
+          0.799,
+          `Expected oscillator stopTime 0.799, got ${osc.stopTime}`
+        );
+      }
+    });
+
+    it('scheduleOperatorEnv respects duration and note-off in ASDE mode', () => {
+      const param = new MockAudioParam(0);
+      scheduleOperatorEnv(param, 0, {
+        delayVal: 0,
+        atkVal: 0,
+        decVal: 64,
+        endVal: 0,
+        levVal: 127,
+        trigMode: 0, // ASDE gated mode
+        duration: 0.2,
+        maxDeviation: 1000,
+      });
+
+      // clipDur = 0.19, stopTime = 0.199
+      const scheduledTimes = param.scheduled.map(
+        (s) => Math.round(s.time * 1000) / 1000
+      );
+      assert.ok(
+        scheduledTimes.includes(0.19),
+        'Should schedule note-off at clipDur'
+      );
+      assert.ok(
+        scheduledTimes.includes(0.199),
+        'Should ramp to endLevel at stopTime'
+      );
+      assert.ok(
+        scheduledTimes.every((t) => t <= 0.199),
+        'No scheduled events should exceed stopTime'
+      );
     });
   });
 });
