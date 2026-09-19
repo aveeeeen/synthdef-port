@@ -33,6 +33,60 @@ const sweep = createParam('sweep');
 const unison = createParam('unison');
 const voices = createParam('voices');
 
+// Digitone Parameters
+const algo = createParam('algo');
+const atkA = createParam('atkA');
+const atkB = createParam('atkB');
+const base = createParam('base');
+const decA = createParam('decA');
+const decB = createParam('decB');
+const drv = createParam('drv');
+const dtun = createParam('dtun');
+const endA = createParam('endA');
+const endB = createParam('endB');
+const fdbk = createParam('fdbk');
+const fltr_atk = createParam('fltr_atk');
+const fltr_dec = createParam('fltr_dec');
+const fltr_del = createParam('fltr_del');
+const fltr_env = createParam('fltr_env');
+const fltr_freq = createParam('fltr_freq');
+const fltr_rel = createParam('fltr_rel');
+const fltr_reso = createParam('fltr_reso');
+const fltr_sus = createParam('fltr_sus');
+const fltr_type = createParam('fltr_type');
+const harm = createParam('harm');
+const levA = createParam('levA');
+const levB = createParam('levB');
+const mix = createParam('mix');
+const ratioA = createParam('ratioA');
+const ratioB = createParam('ratioB');
+const ratioC = createParam('ratioC');
+const width = createParam('width');
+
+// Digitone FM Synthesis Engine Helpers
+import {
+  digitoneAlgo1,
+  digitoneAlgo2,
+  digitoneAlgo3,
+  digitoneAlgo4,
+  digitoneAlgo5,
+  digitoneAlgo6,
+  digitoneAlgo7,
+  digitoneAlgo8,
+  digitoneAlgorithms,
+  getDigitoneAlgorithm,
+  calculateLevB,
+  calculateDetuneOffset,
+  getHarmonicPartials,
+  createDigitonePeriodicWave,
+  scheduleOperatorEnv,
+  createFeedbackLoop,
+  createDigitoneOverdriveNode,
+  createBaseWidthFilterNode,
+  createMultimodeFilterNode,
+  playDigitoneSynVoice,
+} from './digitone-fm.js';
+
 // ============================================================================
 // Helper Functions & Noise Nodes
 // ============================================================================
@@ -4950,3 +5004,49 @@ registerSound(
   },
   { type: 'synth' },
 );
+
+// ============================================================================
+// 52. syn - Elektron Digitone FM Synth Track
+// References:
+// - digitone-manual/elektron-digitone-fm-synthesis-overview.pdf (A.1 - A.7)
+// - digitone-manual/elektron-digitone-synth-track-parameters.pdf (11.1 - 11.10)
+// ============================================================================
+registerSound(
+  'syn',
+  (time, value, onended) => {
+    const ctx = getAudioContext();
+    return playDigitoneSynVoice(
+      ctx,
+      time,
+      value,
+      onended,
+      getFrequencyFromValue,
+      getGainAdjustment
+    );
+  },
+  { type: 'synth' },
+);
+
+// Export Digitone FM algorithms and helper utilities
+export {
+  digitoneAlgo1,
+  digitoneAlgo2,
+  digitoneAlgo3,
+  digitoneAlgo4,
+  digitoneAlgo5,
+  digitoneAlgo6,
+  digitoneAlgo7,
+  digitoneAlgo8,
+  digitoneAlgorithms,
+  getDigitoneAlgorithm,
+  calculateLevB,
+  calculateDetuneOffset,
+  getHarmonicPartials,
+  createDigitonePeriodicWave,
+  scheduleOperatorEnv,
+  createFeedbackLoop,
+  createDigitoneOverdriveNode,
+  createBaseWidthFilterNode,
+  createMultimodeFilterNode,
+  playDigitoneSynVoice,
+};
