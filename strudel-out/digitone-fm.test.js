@@ -14,10 +14,13 @@ import {
   getDigitoneAlgorithm,
   calculateLevB,
   calculateDetuneOffset,
+  besselJ,
   getHarmonicPartials,
   createDigitonePeriodicWave,
   scheduleOperatorEnv,
+  schedulePitchEnvelope,
   createFeedbackLoop,
+  createDigitoneFeedbackOperator,
   createDigitoneOverdriveNode,
   createBaseWidthFilterNode,
   createMultimodeFilterNode,
@@ -133,12 +136,51 @@ class MockWaveShaperNode extends MockAudioNode {
   }
 }
 
+class MockAudioBufferSourceNode extends MockAudioNode {
+  constructor(ctx) {
+    super(ctx);
+    this.buffer = null;
+    this.loop = false;
+    this.started = false;
+    this.stopped = false;
+  }
+  start(t) {
+    this.started = true;
+    this.startTime = t;
+  }
+  stop(t) {
+    this.stopped = true;
+    this.stopTime = t;
+  }
+}
+
+class MockAudioBuffer {
+  constructor(channels, length, sampleRate) {
+    this.numberOfChannels = channels;
+    this.length = length;
+    this.sampleRate = sampleRate;
+    this.channels = Array.from(
+      { length: channels },
+      () => new Float32Array(length),
+    );
+  }
+  getChannelData(c) {
+    return this.channels[c] || new Float32Array(this.length);
+  }
+}
+
 class MockAudioContext {
   constructor() {
     this.sampleRate = 44100;
   }
   createPeriodicWave(real, imag) {
     return { real, imag };
+  }
+  createBuffer(channels, length, sampleRate) {
+    return new MockAudioBuffer(channels, length, sampleRate);
+  }
+  createBufferSource() {
+    return new MockAudioBufferSourceNode(this);
   }
 }
 
@@ -149,6 +191,7 @@ globalThis.GainNode = MockGainNode;
 globalThis.DelayNode = MockDelayNode;
 globalThis.BiquadFilterNode = MockBiquadFilterNode;
 globalThis.WaveShaperNode = MockWaveShaperNode;
+globalThis.AudioBufferSourceNode = MockAudioBufferSourceNode;
 
 const createMockOps = (ctx) => ({
   opC: new MockOscillatorNode(ctx, { frequency: 100 }),
@@ -162,6 +205,7 @@ const createMockEnvNodes = (ctx) => ({
   gainB1: new MockGainNode(ctx, { gain: 0 }),
   gainB2: new MockGainNode(ctx, { gain: 0 }),
 });
+
 
 // ============================================================================
 // Unit Tests
@@ -622,4 +666,236 @@ describe('Digitone FM Synthesis Engine', () => {
       );
     });
   });
+
+  describe('Pitch Envelope (patk, plen, prate, pmode)', () => {
+    it('schedules pitch envelope starting at peak when patk = 0', () => {
+      const param = new MockAudioParam(100);
+      schedulePitchEnvelope(param, 0, 100, {
+        patk: 0,
+        plen: 0.15,
+        prate: 2.0,
+        duration: 0.5,
+      });
+
+      const setVal = param.scheduled.find((s) => s.type === 'setValue');
+      const ramp = param.scheduled.find((s) => s.type === 'exponentialRamp');
+      assert.strictEqual(setVal.value, 200);
+      assert.strictEqual(ramp.value, 100);
+      assert.strictEqual(Math.round(ramp.time * 1000) / 1000, 0.15);
+    });
+
+    it('schedules pitch attack ramp when patk > 0', () => {
+      const param = new MockAudioParam(100);
+      schedulePitchEnvelope(param, 0, 100, {
+        patk: 0.05,
+        plen: 0.1,
+        prate: 1.5,
+        duration: 0.5,
+      });
+
+      const ramps = param.scheduled.filter((s) => s.type === 'exponentialRamp');
+      assert.strictEqual(ramps.length, 2);
+      assert.strictEqual(ramps[0].value, 150);
+      assert.strictEqual(Math.round(ramps[0].time * 1000) / 1000, 0.05);
+      assert.strictEqual(ramps[1].value, 100);
+      assert.strictEqual(Math.round(ramps[1].time * 1000) / 1000, 0.15);
+    });
+
+    it('applies pitch envelope only to carrier operators in carrier mode', () => {
+      const ctx = new MockAudioContext();
+      MockOscillatorNode.instances = [];
+
+      // Algo 1 has carriers C, B1, and modulators A, B2
+      playDigitoneSynVoice(
+        ctx,
+        0,
+        {
+          algo: 1,
+          freq: 200,
+          patk: 0,
+          plen: 0.2,
+          prate: 2.0,
+          pmode: 'carrier',
+          duration: 0.5,
+        },
+        () => {}
+      );
+
+      const oscs = MockOscillatorNode.instances.slice(-4);
+      const opC = oscs[0];
+      const hasRampC = opC.frequency.scheduled.some((s) => s.type === 'exponentialRamp');
+      assert.ok(hasRampC, 'Carrier C should have pitch envelope scheduled');
+
+      const opB2 = oscs[3];
+      const hasRampB2 = opB2.frequency.scheduled.some((s) => s.type === 'exponentialRamp');
+      assert.ok(!hasRampB2, 'Modulator B2 should NOT have pitch envelope in carrier mode');
+    });
+
+    it('applies pitch envelope to all operators in all mode', () => {
+      const ctx = new MockAudioContext();
+      MockOscillatorNode.instances = [];
+
+      playDigitoneSynVoice(
+        ctx,
+        0,
+        {
+          algo: 1,
+          freq: 200,
+          patk: 0,
+          plen: 0.2,
+          prate: 2.0,
+          pmode: 'all',
+          duration: 0.5,
+        },
+        () => {}
+      );
+
+      const oscs = MockOscillatorNode.instances.slice(-4);
+      for (const osc of oscs) {
+        const hasRamp = osc.frequency.scheduled.some((s) => s.type === 'exponentialRamp');
+        assert.ok(hasRamp, 'All operators should have pitch envelope in all mode');
+      }
+    });
+  });
+
+  describe('Envelope Seconds Timing', () => {
+    it('scheduleOperatorEnv accepts direct seconds for atkSec and decSec', () => {
+      const param = new MockAudioParam(0);
+      scheduleOperatorEnv(param, 0, {
+        delSec: 0.05,
+        atkSec: 0.1,
+        decSec: 0.3,
+        levVal: 127,
+        endVal: 0,
+        trigMode: 1,
+        duration: 1.0,
+        maxDeviation: 1.0,
+      });
+
+      const ramps = param.scheduled.filter((s) => s.type === 'linearRamp');
+      assert.strictEqual(Math.round(ramps[0].time * 1000) / 1000, 0.15);
+      assert.strictEqual(Math.round(ramps[1].time * 1000) / 1000, 0.45);
+    });
+
+    it('playDigitoneSynVoice interprets amp envelope and filter envelope in seconds', () => {
+      const ctx = new MockAudioContext();
+      const voice = playDigitoneSynVoice(
+        ctx,
+        0,
+        {
+          amp_atk: 0.08,
+          amp_dec: 0.25,
+          amp_sus: 64,
+          amp_rel: 0.15,
+          fltr_atk: 0.03,
+          fltr_dec: 0.12,
+          duration: 1.0,
+        },
+        () => {}
+      );
+      assert.ok(voice.node);
+    });
+  });
+
+  describe('Algorithms 7 & 8 Carrier Envelopes & Separation', () => {
+    it('Algo 7 passes audio through carrier amplitude envelopes (gain 0..1)', () => {
+      const ctx = new MockAudioContext();
+      const ops = createMockOps(ctx);
+      const envNodes = {
+        ...createMockEnvNodes(ctx),
+        carrierGainA: new MockGainNode(ctx, { gain: 0 }),
+        carrierGainB1: new MockGainNode(ctx, { gain: 0 }),
+        carrierGainB2: new MockGainNode(ctx, { gain: 0 }),
+      };
+
+      const res = digitoneAlgo7(ctx, 0, ops, envNodes, 0);
+
+      // Carrier X gets C directly (dotted line) and A enveloped (solid line)
+      assert.ok(ops.opC.connections.includes(res.outX));
+      assert.ok(ops.opA.connections.includes(envNodes.carrierGainA));
+      assert.ok(envNodes.carrierGainA.connections.includes(res.outX));
+
+      // Carrier Y gets B1 enveloped and B2 enveloped
+      assert.ok(ops.opB1.connections.includes(envNodes.carrierGainB1));
+      assert.ok(envNodes.carrierGainB1.connections.includes(res.outY));
+      assert.ok(ops.opB2.connections.includes(envNodes.carrierGainB2));
+      assert.ok(envNodes.carrierGainB2.connections.includes(res.outY));
+
+      // Modulators: A modulates C, B2 modulates B1
+      assert.ok(ops.opA.connections.includes(envNodes.gainA));
+      assert.ok(envNodes.gainA.connections.includes(ops.opC.frequency));
+      assert.ok(ops.opB2.connections.includes(envNodes.gainB2));
+      assert.ok(envNodes.gainB2.connections.includes(ops.opB1.frequency));
+
+      res.disconnect();
+    });
+
+    it('Algo 8 passes B1 and B2 carriers through carrier amplitude envelopes', () => {
+      const ctx = new MockAudioContext();
+      const ops = createMockOps(ctx);
+      const envNodes = {
+        ...createMockEnvNodes(ctx),
+        carrierGainB1: new MockGainNode(ctx, { gain: 0 }),
+        carrierGainB2: new MockGainNode(ctx, { gain: 0 }),
+      };
+
+      const res = digitoneAlgo8(ctx, 0, ops, envNodes, 0);
+
+      // Carrier X gets C (dotted) and B2 enveloped (solid)
+      assert.ok(ops.opC.connections.includes(res.outX));
+      assert.ok(ops.opB2.connections.includes(envNodes.carrierGainB2));
+      assert.ok(envNodes.carrierGainB2.connections.includes(res.outX));
+
+      // Carrier Y gets B1 enveloped (solid)
+      assert.ok(ops.opB1.connections.includes(envNodes.carrierGainB1));
+      assert.ok(envNodes.carrierGainB1.connections.includes(res.outY));
+
+      // Modulation: A modulates C
+      assert.ok(ops.opA.connections.includes(envNodes.gainA));
+      assert.ok(envNodes.gainA.connections.includes(ops.opC.frequency));
+
+      res.disconnect();
+    });
+  });
+
+  describe('FM Feedback DSP (Sine -> Sawtooth -> Noise)', () => {
+    it('produces pure sine partials at feedback = 0', () => {
+      const p = getHarmonicPartials(0, 'A', 0);
+      assert.strictEqual(p[1], 1.0);
+      for (let n = 2; n < p.length; n++) {
+        assert.strictEqual(p[n], 0, `Partial ${n} should be 0 at fdbk=0`);
+      }
+    });
+
+    it('smoothly expands harmonics up to sawtooth spectrum at feedback = 64', () => {
+      const p32 = getHarmonicPartials(0, 'A', 32);
+      const p64 = getHarmonicPartials(0, 'A', 64);
+
+      assert.ok(p32[2] > 0);
+      assert.ok(p64[2] > p32[2]);
+      assert.ok(p64[3] > p32[3]);
+
+      assert.ok(p64[1] > p64[2]);
+      assert.ok(p64[2] > p64[3]);
+      assert.ok(p64[3] > p64[4]);
+      assert.ok(p64[10] > 0);
+    });
+
+    it('createDigitoneFeedbackOperator uses pure oscillator when fdbk <= 64', () => {
+      const ctx = new MockAudioContext();
+      const op = createDigitoneFeedbackOperator(ctx, 0, 220, 0, 'A', 50, 1.0);
+      assert.strictEqual(op.noiseSource, null);
+      assert.ok(op.osc instanceof MockOscillatorNode);
+      op.disconnect();
+    });
+
+    it('createDigitoneFeedbackOperator activates noise blending when fdbk > 64', () => {
+      const ctx = new MockAudioContext();
+      const op = createDigitoneFeedbackOperator(ctx, 0, 220, 0, 'A', 100, 1.0);
+      assert.ok(op.noiseSource, 'Noise source should be created when fdbk > 64');
+      assert.ok(op.node instanceof MockGainNode, 'Output should be blended gain node');
+      op.disconnect();
+    });
+  });
 });
+
