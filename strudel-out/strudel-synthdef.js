@@ -23,56 +23,57 @@ if (typeof getAudioContext === 'undefined') {
 // ============================================================================
 // Custom Parameters
 // ============================================================================
-const atk = createParam('atk');
-const clr = createParam('clr');
-const contour = createParam('contour');
-const cutoff = createParam('cutoff');
-const detune = createParam('detune');
-const index = createParam('index');
-const len = createParam('len');
-const lpfend = createParam('lpfend');
-const lpfstart = createParam('lpfstart');
-const modrate = createParam('modrate');
-const noiseamp = createParam('noiseamp');
-const patk = createParam('patk');
-const plen = createParam('plen');
-const prate = createParam('prate');
-const q = createParam('q');
-const shp = createParam('shp');
-const sust = createParam('sust');
-const sweep = createParam('sweep');
-const unison = createParam('unison');
-const voices = createParam('voices');
+createParam('atk');
+createParam('clr');
+createParam('contour');
+createParam('cutoff');
+createParam('detune');
+createParam('index');
+createParam('len');
+createParam('lpfend');
+createParam('lpfstart');
+createParam('modrate');
+createParam('noiseamp');
+createParam('patk');
+createParam('plen');
+createParam('prate');
+createParam('pmode');
+createParam('q');
+createParam('shp');
+createParam('sust');
+createParam('sweep');
+createParam('unison');
+createParam('voices');
 
 // Digitone Parameters
-const algo = createParam('algo');
-const atkA = createParam('atkA');
-const atkB = createParam('atkB');
-const base = createParam('base');
-const decA = createParam('decA');
-const decB = createParam('decB');
-const drv = createParam('drv');
-const dtun = createParam('dtun');
-const endA = createParam('endA');
-const endB = createParam('endB');
-const fdbk = createParam('fdbk');
-const fltr_atk = createParam('fltr_atk');
-const fltr_dec = createParam('fltr_dec');
-const fltr_del = createParam('fltr_del');
-const fltr_env = createParam('fltr_env');
-const fltr_freq = createParam('fltr_freq');
-const fltr_rel = createParam('fltr_rel');
-const fltr_reso = createParam('fltr_reso');
-const fltr_sus = createParam('fltr_sus');
-const fltr_type = createParam('fltr_type');
-const harm = createParam('harm');
-const levA = createParam('levA');
-const levB = createParam('levB');
-const mix = createParam('mix');
-const ratioA = createParam('ratioA');
-const ratioB = createParam('ratioB');
-const ratioC = createParam('ratioC');
-const width = createParam('width');
+createParam('algo');
+createParam('atkA');
+createParam('atkB');
+createParam('base');
+createParam('decA');
+createParam('decB');
+createParam('drv');
+createParam('dtun');
+createParam('endA');
+createParam('endB');
+createParam('fdbk');
+createParam('fltAtk');
+createParam('fltDec');
+createParam('fltDel');
+createParam('fltEnv');
+createParam('fltFreq');
+createParam('fltRel');
+createParam('fltQ');
+createParam('fltSus');
+createParam('fltType');
+createParam('harm');
+createParam('levA');
+createParam('levB');
+createParam('mix');
+createParam('ratioA');
+createParam('ratioB');
+createParam('ratioC');
+createParam('width');
 
 // ============================================================================
 // Helper Functions & Noise Nodes
@@ -5024,11 +5025,15 @@ const paramToQ = (val, minQ = 0.707, maxQ = 24.0) => {
 };
 
 const calculateDetuneOffset = (dtun) => {
-  const d = Math.max(0, Math.min(127, Number(dtun ?? 0)));
-  if (d <= 64) {
-    return (d / 64) * 0.015;
-  }
-  return 0.015 + Math.pow((d - 64) / 63, 2) * 0.35;
+  const val = Number(dtun ?? 0);
+  if (isNaN(val) || val === 0) return 0;
+  // 最小ステップ 0.01 (1セント単位) に丸める
+  const stepped = Math.round(val * 100) / 100;
+  // -12 < x < 12 の範囲にクランプ (ステップ 0.01 のため有効範囲は -11.99 〜 11.99)
+  const semitones = Math.max(-11.99, Math.min(11.99, stepped));
+  if (semitones === 0) return 0;
+  // 半音単位から周波数オフセット比率 (2^(semitones / 12) - 1) に変換
+  return Math.pow(2, semitones / 12) - 1;
 };
 
 const calculateLevB = (v) => {
@@ -5093,7 +5098,9 @@ const getHarmonicPartials = (harm, opName, fdbk = 0) => {
       const squareAmp = isOdd ? 1.0 / n : 0.0;
       const oddEvenAmp = isOdd ? 1.0 / n : 0.5 / n;
       const bellAmp =
-        n === 3 || n === 5 || n === 8 || n === 11 ? 0.8 / Math.sqrt(n) : 0.1 / n;
+        n === 3 || n === 5 || n === 8 || n === 11
+          ? 0.8 / Math.sqrt(n)
+          : 0.1 / n;
 
       let amp = 0;
       if (segIndex === 0) {
@@ -5158,8 +5165,10 @@ const scheduleOperatorEnv = (
   const dSec = Math.max(0, Number(delSec ?? delayVal ?? 0));
   const aSec = Math.max(0.0005, Number(atkSec ?? atkVal ?? 0.001));
   const dDecSec = Math.max(0.001, Number(decSec ?? decVal ?? 0.5));
-  const normLev = levVal > 1 ? Math.min(127, levVal) / 127 : Math.max(0, levVal);
-  const normEnd = endVal > 1 ? Math.min(127, endVal) / 127 : Math.max(0, endVal);
+  const normLev =
+    levVal > 1 ? Math.min(127, levVal) / 127 : Math.max(0, levVal);
+  const normEnd =
+    endVal > 1 ? Math.min(127, endVal) / 127 : Math.max(0, endVal);
   const peakLevel = normLev * maxDeviation;
   const endLevel = normEnd * maxDeviation;
 
@@ -5217,12 +5226,7 @@ const schedulePitchEnvelope = (
   opFreqParam,
   time,
   baseFreq,
-  {
-    patk = 0,
-    plen = 0.1,
-    prate = 1.0,
-    duration = 1.0,
-  } = {},
+  { patk = 0, plen = 0.1, prate = 1.0, duration = 1.0 } = {},
 ) => {
   const rate = Number(prate ?? 1.0);
   const len = Math.max(0, Number(plen ?? 0));
@@ -5713,14 +5717,8 @@ const digitoneAlgo6 = (ctx, time, ops, envNodes, fdbkGain) => {
 
 const digitoneAlgo7 = (ctx, time, ops, envNodes, fdbkGain) => {
   const { opC, opA, opB1, opB2 } = ops;
-  const {
-    gainA,
-    gainB1,
-    gainB2,
-    carrierGainA,
-    carrierGainB1,
-    carrierGainB2,
-  } = envNodes;
+  const { gainA, gainB1, gainB2, carrierGainA, carrierGainB1, carrierGainB2 } =
+    envNodes;
 
   const fb = createFeedbackLoop(ctx, opA, fdbkGain);
 
@@ -5813,13 +5811,7 @@ const digitoneAlgo7 = (ctx, time, ops, envNodes, fdbkGain) => {
 
 const digitoneAlgo8 = (ctx, time, ops, envNodes, fdbkGain) => {
   const { opC, opA, opB1, opB2 } = ops;
-  const {
-    gainA,
-    gainB1,
-    gainB2,
-    carrierGainB1,
-    carrierGainB2,
-  } = envNodes;
+  const { gainA, gainB1, gainB2, carrierGainB1, carrierGainB2 } = envNodes;
 
   const fb = createFeedbackLoop(ctx, opB1, fdbkGain);
 
@@ -6014,17 +6006,44 @@ const createBaseWidthFilterNode = (ctx, baseVal = 0, widthVal = 127) => {
 };
 
 const createMultimodeFilterNode = (ctx, time, value) => {
-  const filterType = Math.round(Number(value.fltr_type ?? value.ftype ?? 1));
-  const fFreqVal = Number(
-    value.fltr_freq ?? value.ffreq ?? value.cutoff ?? 127,
-  );
-  const fResoVal = Number(value.fltr_reso ?? value.freso ?? value.q ?? 0);
-  const fEnvDepthVal = Number(value.fltr_env ?? value.fenv ?? 0);
+  const filterType = value.fltr_type ?? value.fltType ?? value.ftype ?? 'lpf';
+  const fTypeStr = String(filterType).toLowerCase();
 
-  const baseFreq = paramToFrequency(fFreqVal, 20, 20000);
+  const isHpf =
+    fTypeStr === 'hpf' ||
+    fTypeStr === 'highpass' ||
+    fTypeStr === 'hp' ||
+    filterType === 2;
+  const isLpf2 =
+    fTypeStr === 'lpf2' ||
+    fTypeStr === 'steeplowpass' ||
+    fTypeStr === 'lp2' ||
+    filterType === 3;
+  const isOff =
+    filterType === 0 ||
+    fTypeStr === '0' ||
+    fTypeStr === 'off' ||
+    fTypeStr === 'none' ||
+    fTypeStr === 'bypass';
+
+  // デフォルト値: lpf/lpf2およびそのバリアントは18000Hz, hpfおよびそのバリアントは20Hz
+  const defaultFreq = isHpf ? 20 : 18000;
+
+  const rawFreq =
+    value.fltr_freq ?? value.ffreq ?? value.fltFreq ?? value.cutoff;
+  const baseFreq =
+    rawFreq !== undefined && rawFreq !== null && !isNaN(Number(rawFreq))
+      ? Math.max(20, Math.min(18000, Number(rawFreq)))
+      : defaultFreq;
+
+  const fResoVal = Number(value.fltr_reso ?? value.freso ?? value.fltQ ?? 0);
+  const fEnvDepthVal = Number(
+    value.fltr_env ?? value.fenv ?? value.fltEnv ?? 0,
+  );
+
   const filterQ = paramToQ(fResoVal, 0.707, 24);
 
-  if (filterType === 0) {
+  if (isOff) {
     const passthrough = new GainNode(ctx, { gain: 1 });
     return {
       input: passthrough,
@@ -6039,18 +6058,25 @@ const createMultimodeFilterNode = (ctx, time, value) => {
 
   const fAtkSec = Math.max(
     0.0005,
-    parseSeconds(value.fltr_atk ?? value.fatk, 0.001),
+    parseSeconds(value.fltr_atk ?? value.fatk ?? value.fltAtk, 0.001),
   );
   const fDecSec = Math.max(
     0.001,
-    parseSeconds(value.fltr_dec ?? value.fdec, 0.5),
+    parseSeconds(value.fltr_dec ?? value.fdec ?? value.fltDec, 0.5),
   );
-  const fSusLevel = parseLevel(value.fltr_sus ?? value.fsus, 127) / 127.0;
+  const rawSus = value.fltr_sus ?? value.fsus ?? value.fltSus;
+  const fSusLevel =
+    rawSus !== undefined && rawSus !== null && !isNaN(Number(rawSus))
+      ? Math.max(20, Math.min(18000, Number(rawSus)))
+      : baseFreq;
   const fRelSec = Math.max(
     0.001,
-    parseSeconds(value.fltr_rel ?? value.frel, 0.1),
+    parseSeconds(value.fltr_rel ?? value.frel ?? value.fltRel, 0.1),
   );
-  const fDelSec = parseSeconds(value.fltr_del ?? value.fdel, 0.0);
+  const fDelSec = parseSeconds(
+    value.fltr_del ?? value.fdel ?? value.fltDel,
+    0.0,
+  );
   const duration = Number(value.duration ?? 1.0);
 
   const octaveSweep = (fEnvDepthVal / 64.0) * 5.0;
@@ -6063,12 +6089,9 @@ const createMultimodeFilterNode = (ctx, time, value) => {
     const tStart = time + fDelSec;
     const peakFreq = Math.max(
       20,
-      Math.min(20000, baseFreq * Math.pow(2, octaveSweep)),
+      Math.min(18000, baseFreq * Math.pow(2, octaveSweep)),
     );
-    const susFreq = Math.max(
-      20,
-      Math.min(20000, baseFreq * Math.pow(2, octaveSweep * fSusLevel)),
-    );
+    const susFreq = Math.max(20, Math.min(18000, fSusLevel));
     const endFreq = baseFreq;
 
     filterNode.frequency.cancelScheduledValues(time);
@@ -6088,7 +6111,7 @@ const createMultimodeFilterNode = (ctx, time, value) => {
       const atkRatio = (tNoteOff - tStart) / Math.max(0.0001, fAtkSec);
       const actualPeakFreq = Math.max(
         20,
-        Math.min(20000, baseFreq * Math.pow(2, octaveSweep * atkRatio)),
+        baseFreq * Math.pow(2, octaveSweep * atkRatio),
       );
       filterNode.frequency.exponentialRampToValueAtTime(
         actualPeakFreq,
@@ -6103,10 +6126,9 @@ const createMultimodeFilterNode = (ctx, time, value) => {
     const tDecIdeal = tPeakIdeal + fDecSec;
     if (tNoteOff <= tDecIdeal) {
       const decRatio = (tNoteOff - tPeakIdeal) / Math.max(0.0001, fDecSec);
-      const interpOctave = octaveSweep * (1.0 - decRatio * (1.0 - fSusLevel));
-      const freqAtOff = Math.max(
-        20,
-        Math.min(20000, baseFreq * Math.pow(2, interpOctave)),
+      const freqAtOff = Math.min(
+        18000,
+        peakFreq * Math.pow(susFreq / peakFreq, decRatio),
       );
       filterNode.frequency.exponentialRampToValueAtTime(freqAtOff, tNoteOff);
       filterNode.frequency.exponentialRampToValueAtTime(endFreq, stopTime);
@@ -6129,17 +6151,7 @@ const createMultimodeFilterNode = (ctx, time, value) => {
   let outputNode;
   const nodesToDisconnect = [];
 
-  if (filterType === 1) {
-    const lp = new BiquadFilterNode(ctx, {
-      type: 'lowpass',
-      frequency: baseFreq,
-      Q: filterQ,
-    });
-    scheduleFilterFreq(lp);
-    inputNode = lp;
-    outputNode = lp;
-    nodesToDisconnect.push(lp);
-  } else if (filterType === 2) {
+  if (isHpf) {
     const hp = new BiquadFilterNode(ctx, {
       type: 'highpass',
       frequency: baseFreq,
@@ -6149,7 +6161,7 @@ const createMultimodeFilterNode = (ctx, time, value) => {
     inputNode = hp;
     outputNode = hp;
     nodesToDisconnect.push(hp);
-  } else if (filterType === 3) {
+  } else if (isLpf2) {
     const lp1 = new BiquadFilterNode(ctx, {
       type: 'lowpass',
       frequency: baseFreq,
@@ -6167,6 +6179,7 @@ const createMultimodeFilterNode = (ctx, time, value) => {
     outputNode = lp2;
     nodesToDisconnect.push(lp1, lp2);
   } else {
+    // デフォルトおよび lpf / lowpass / lp
     const lp = new BiquadFilterNode(ctx, {
       type: 'lowpass',
       frequency: baseFreq,
@@ -6228,7 +6241,7 @@ const playDigitoneSynVoice = (
     0,
     Math.min(127, Number(value.fdbk ?? value.feedback ?? 0)),
   );
-  const mix = Math.max(-64, Math.min(63, Number(value.mix ?? 0)));
+  const mix = Math.max(-64, Math.min(63, Number(value.mix ?? -64)));
 
   const dtunOffset = calculateDetuneOffset(dtun);
 
@@ -6497,18 +6510,16 @@ const playDigitoneSynVoice = (
   const mixGainX = Math.cos(normMix * 0.5 * Math.PI);
   const mixGainY = Math.sin(normMix * 0.5 * Math.PI);
 
-  const mixedOut = new GainNode(ctx, { gain: 1 });
   const xGain = new GainNode(ctx, { gain: mixGainX });
   const yGain = new GainNode(ctx, { gain: mixGainY });
 
-  algoResult.outX.connect(xGain);
-  algoResult.outY.connect(yGain);
-  xGain.connect(mixedOut);
-  yGain.connect(mixedOut);
-
   const drvVal = Number(value.drv ?? value.overdrive ?? 0);
   const overdriveNode = createDigitoneOverdriveNode(ctx, drvVal);
-  mixedOut.connect(overdriveNode.input);
+
+  algoResult.outX.connect(xGain);
+  algoResult.outY.connect(yGain);
+  xGain.connect(overdriveNode.input);
+  yGain.connect(overdriveNode.input);
 
   const baseVal = Number(value.base ?? 0);
   const widthVal = Number(value.width ?? 127);
@@ -6690,30 +6701,3 @@ registerSound(
   },
   { type: 'synth' },
 );
-
-export {
-  digitoneAlgo1,
-  digitoneAlgo2,
-  digitoneAlgo3,
-  digitoneAlgo4,
-  digitoneAlgo5,
-  digitoneAlgo6,
-  digitoneAlgo7,
-  digitoneAlgo8,
-  digitoneAlgorithms,
-  getDigitoneAlgorithm,
-  calculateLevB,
-  calculateDetuneOffset,
-  besselJ,
-  getHarmonicPartials,
-  createDigitonePeriodicWave,
-  scheduleOperatorEnv,
-  schedulePitchEnvelope,
-  createFeedbackLoop,
-  createDigitoneFeedbackOperator,
-  createDigitoneOverdriveNode,
-  createBaseWidthFilterNode,
-  createMultimodeFilterNode,
-  playDigitoneSynVoice,
-};
-
