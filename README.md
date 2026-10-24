@@ -1,10 +1,10 @@
 # Digitone FM Synth Clone for Strudel (`syn`)
 
-Elektron Digitone の 4 オペレーター FM シンセシス・アーキテクチャを Web Audio API および [Strudel](https://strudel.cc) 環境向けに再現したシンセボイス実装 [`syn`](file:///Users/braveeeeen/dev/synthdef-port/strudel-out/strudel-digitone-clone.js#L2201) の利用ガイドです。
+Elektron Digitone の 4 オペレーター FM シンセシス・アーキテクチャを Web Audio API および [Strudel](https://strudel.cc) 環境向けに再現したシンセボイス実装 [`syn`](./strudel-out/strudel-digitone-clone.js#L2201) の利用ガイドです。
 
 8つの FM アルゴリズム、ハーモニクス波形モーフィング、オペレーター/ピッチ/アンプの各エンベロープ、Base-Width フィルター、マルチモードフィルター、オーバードライブなど、Digitone 特有のサウンドメイクを Strudel 上で直感的にコーディングできます。
 
-実装コード: [strudel-out/strudel-digitone-clone.js](file:///Users/braveeeeen/dev/synthdef-port/strudel-out/strudel-digitone-clone.js)
+実装コード: [strudel-out/strudel-digitone-clone.js](./strudel-out/strudel-digitone-clone.js)
 
 ---
 
@@ -29,7 +29,7 @@ Elektron Digitone の 4 オペレーター FM シンセシス・アーキテク�
 Strudel の Web エディタ（[strudel.cc](https://strudel.cc)）で `syn` シンセを使うための初期設定です。
 
 1. **コードのコピー**:
-   - [strudel-out/strudel-digitone-clone.js](file:///Users/braveeeeen/dev/synthdef-port/strudel-out/strudel-digitone-clone.js) の内容をすべてクリップボードにコピーします。
+   - [strudel-out/strudel-digitone-clone.js](./strudel-out/strudel-digitone-clone.js) の内容をすべてクリップボードにコピーします。
 2. **Prebake セクションを開く**:
    - Strudel エディタのメニューまたは設定パネルから **Prebake** セクション（初期化スクリプト領域）を開きます。
 3. **ペースト＆評価**:
@@ -96,7 +96,7 @@ Digitone は 4 つのオペレーター（**C**, **A**, **B1**, **B2**）で構�
 
 ## アルゴリズム一覧（Algo 1〜8）
 
-`algo(1)` 〜 `algo(8)` でオペレーター間の接続構造を切り替えます。各アルゴリズムの実装は [getDigitoneAlgorithm](file:///Users/braveeeeen/dev/synthdef-port/strudel-out/strudel-digitone-clone.js#L1435) に定義されています。
+`algo(1)` 〜 `algo(8)` でオペレーター間の接続構造を切り替えます。各アルゴリズムの実装は [getDigitoneAlgorithm](./strudel-out/strudel-digitone-clone.js#L1435) に定義されています。
 
 | Algo | モジュレーション経路 | 出力 (X / Y) | フィードバック | 特徴・推奨用途 |
 | :--- | :--- | :--- | :--- | :--- |
@@ -183,7 +183,7 @@ Digitone は 4 つのオペレーター（**C**, **A**, **B1**, **B2**）で構�
 音声信号は **FM 出力 -> Overdrive -> Base-Width フィルター -> Multimode フィルター** の順にルーティングされます。
 
 #### 1. Base-Width フィルター
-直感的な帯域制限（不要な低域を削り、帯域幅を決める）を行う Digitone 固有のフィルターです。実装: [createBaseWidthFilterNode](file:///Users/braveeeeen/dev/synthdef-port/strudel-out/strudel-digitone-clone.js#L1498)
+直感的な帯域制限（不要な低域を削り、帯域幅を決める）を行う Digitone 固有のフィルターです。実装: [createBaseWidthFilterNode](./strudel-out/strudel-digitone-clone.js#L1498)
 
 | パラメータ | 設定範囲 | デフォルト | 説明 |
 | :--- | :--- | :--- | :--- |
@@ -191,7 +191,7 @@ Digitone は 4 つのオペレーター（**C**, **A**, **B1**, **B2**）で構�
 | `width` | `0` 〜 `127` | `127` | 通過帯域幅（127: フルオープン 20000Hz） |
 
 #### 2. マルチモードフィルター
-レゾナンスと専用 ADSR エンベロープを備えた本格的なフィルターです。実装: [createMultimodeFilterNode](file:///Users/braveeeeen/dev/synthdef-port/strudel-out/strudel-digitone-clone.js#L1551)
+レゾナンスと専用 ADSR エンベロープを備えた本格的なフィルターです。実装: [createMultimodeFilterNode](./strudel-out/strudel-digitone-clone.js#L1551)
 
 | パラメータ | 別名 | 設定範囲 | デフォルト | 説明 |
 | :--- | :--- | :--- | :--- | :--- |
@@ -210,6 +210,7 @@ Digitone は 4 つのオペレーター（**C**, **A**, **B1**, **B2**）で構�
 | パラメータ | 別名 | 設定範囲 | デフォルト | 説明 |
 | :--- | :--- | :--- | :--- | :--- |
 | `drv` | `overdrive` | `0` 〜 `127` | `0` | Digitone 特有の tanh ソフトクリッピング歪み（音量自動補正付き） |
+| `stereoDetune` | - | `0` 〜 `127` | `0` | L/Rステレオデチューン（0でモノラル、127でRチャンネルが最大+1半音デチューン） |
 | `pan` | - | `-64` 〜 `63` | `0` | ステレオパンニング |
 | `vol` | `volume` | `0` 〜 `127` | `100` | マスターボリューム |
 
@@ -326,7 +327,7 @@ note("c3 eb3 f3 g3 bb3 c4 eb4 g4")
 
 ## 関連ソース・ドキュメント
 
-- コア実装: [strudel-out/strudel-digitone-clone.js](file:///Users/braveeeeen/dev/synthdef-port/strudel-out/strudel-digitone-clone.js)
-- 音声再生メインルーチン: [playDigitoneSynVoice](file:///Users/braveeeeen/dev/synthdef-port/strudel-out/strudel-digitone-clone.js#L1751)
-- アルゴリズムルーティング: [getDigitoneAlgorithm](file:///Users/braveeeeen/dev/synthdef-port/strudel-out/strudel-digitone-clone.js#L1435)
-- テストスイート: [strudel-out/digitone-fm.test.js](file:///Users/braveeeeen/dev/synthdef-port/strudel-out/digitone-fm.test.js)
+- コア実装: [strudel-out/strudel-digitone-clone.js](./strudel-out/strudel-digitone-clone.js)
+- 音声再生メインルーチン: [playDigitoneSynVoice](./strudel-out/strudel-digitone-clone.js#L1751)
+- アルゴリズムルーティング: [getDigitoneAlgorithm](./strudel-out/strudel-digitone-clone.js#L1435)
+- テストスイート: [strudel-out/digitone-fm.test.js](./strudel-out/digitone-fm.test.js)

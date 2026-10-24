@@ -2,6 +2,12 @@
 if (typeof createParam === 'undefined') {
   globalThis.createParam = (name) => name;
 }
+if (typeof createParameter === 'function' && typeof createParam === 'undefined') {
+  globalThis.createParam = createParameter;
+}
+if (typeof createParam === 'function' && typeof createParameter === 'undefined') {
+  globalThis.createParameter = createParam;
+}
 if (typeof registerSound === 'undefined') {
   globalThis.registerSound = () => {};
 }
@@ -55,6 +61,15 @@ createParam('fltr_rel');
 createParam('fltr_reso');
 createParam('fltr_sus');
 createParam('fltr_type');
+createParam('fltAtk');
+createParam('fltDec');
+createParam('fltDel');
+createParam('fltEnv');
+createParam('fltFreq');
+createParam('fltRel');
+createParam('fltQ');
+createParam('fltSus');
+createParam('fltType');
 createParam('harm');
 createParam('levA');
 createParam('levB');
@@ -62,6 +77,7 @@ createParam('mix');
 createParam('ratioA');
 createParam('ratioB');
 createParam('ratioC');
+createParam('stereoDetune');
 createParam('width');
 
 // ============================================================================
@@ -542,7 +558,7 @@ const baseEnvLinear = (
   param.setValueAtTime(0, time);
 
   // ポップ音（クリックノイズ）防止のためのフェード窓
-  const fadeSec = Math.min(0.005, durSec * 0.3);
+  const fadeSec = Math.min(0.005, Math.max(0.001, durSec * 0.4));
   const tFadeStart = Math.max(time, tEnd - fadeSec);
 
   if (tEnd >= t3) {
@@ -565,7 +581,9 @@ const baseEnvLinear = (
     param.linearRampToValueAtTime(peakVal, t1);
     const decRatio = (tFadeStart - t1) / dSec;
     const lev = Math.max(0, peakVal - decRatio * (peakVal - sustVal));
-    param.linearRampToValueAtTime(lev, tFadeStart);
+    if (tFadeStart > t1) {
+      param.linearRampToValueAtTime(lev, tFadeStart);
+    }
     param.linearRampToValueAtTime(0, tEnd);
   } else {
     // durationが短くRelease途中で終了
@@ -573,7 +591,9 @@ const baseEnvLinear = (
     param.linearRampToValueAtTime(sustVal, t2);
     const relRatio = (tFadeStart - t2) / rSec;
     const lev = Math.max(0, sustVal * (1 - relRatio));
-    param.linearRampToValueAtTime(lev, tFadeStart);
+    if (tFadeStart > t2) {
+      param.linearRampToValueAtTime(lev, tFadeStart);
+    }
     param.linearRampToValueAtTime(0, tEnd);
   }
 };
@@ -605,7 +625,7 @@ const baseEnvExp = (
   param.setValueAtTime(floorVal, time);
 
   // ポップ音（クリックノイズ）防止のためのフェード窓
-  const fadeSec = Math.min(0.005, durSec * 0.3);
+  const fadeSec = Math.min(0.005, Math.max(0.001, durSec * 0.4));
   const tFadeStart = Math.max(time, tEnd - fadeSec);
 
   if (tEnd >= t3 + 0.002) {
@@ -636,7 +656,9 @@ const baseEnvExp = (
       floorVal,
       peakVal * Math.pow(sustVal / peakVal, decRatio),
     );
-    param.exponentialRampToValueAtTime(lev, tFadeStart);
+    if (tFadeStart > t1) {
+      param.exponentialRampToValueAtTime(lev, tFadeStart);
+    }
     param.linearRampToValueAtTime(0, tEnd);
   } else {
     // durationが短くRelease途中で終了
@@ -647,7 +669,9 @@ const baseEnvExp = (
       floorVal,
       sustVal * Math.pow(floorVal / sustVal, relRatio),
     );
-    param.exponentialRampToValueAtTime(lev, tFadeStart);
+    if (tFadeStart > t2) {
+      param.exponentialRampToValueAtTime(lev, tFadeStart);
+    }
     param.linearRampToValueAtTime(0, tEnd);
   }
 };
@@ -715,16 +739,20 @@ const scheduleOperatorEnv = (
   const endLevel = normEnd * maxDeviation;
 
   const clipDur = Math.max(0.002, duration - 0.01);
-  const tNoteOff = time + clipDur;
+  const tEnd = time + clipDur;
 
   // --- 初期化 & [Delay] フェーズ ---
   param.cancelScheduledValues(time);
   param.setValueAtTime(0, time);
 
+  // ポップ音防止用フェード窓
+  const fadeSec = Math.min(0.005, Math.max(0.001, clipDur * 0.4));
+  const tFadeStart = Math.max(time, tEnd - fadeSec);
+
   const tStart = time + dSec;
-  if (tStart >= tNoteOff) {
+  if (tStart >= tFadeStart) {
     // Delay中にノートオフが来た場合: 発音せず終了
-    param.linearRampToValueAtTime(0, stopTime);
+    param.setValueAtTime(0, tEnd);
     return;
   }
 
@@ -735,13 +763,14 @@ const scheduleOperatorEnv = (
   // --- [Attack] フェーズ ---
   const tPeakIdeal = tStart + aSec;
 
-  if (tNoteOff <= tPeakIdeal) {
-    // [Attack中断 -> Release]: Attack完了前にノートオフが来た場合
+  if (tFadeStart <= tPeakIdeal) {
+    // [Attack中断]: Attack完了前にノートオフが来た場合
     const actualPeak =
-      ((tNoteOff - tStart) / Math.max(0.0001, aSec)) * peakLevel;
-    param.linearRampToValueAtTime(actualPeak, tNoteOff);
-    // [Release]: ノートオフからstopTimeにかけてendLevelへ
-    param.linearRampToValueAtTime(endLevel, stopTime);
+      ((tFadeStart - tStart) / Math.max(0.0001, aSec)) * peakLevel;
+    if (tFadeStart > tStart) {
+      param.linearRampToValueAtTime(actualPeak, tFadeStart);
+    }
+    param.linearRampToValueAtTime(0, tEnd);
     return;
   }
 
@@ -750,18 +779,23 @@ const scheduleOperatorEnv = (
 
   // --- [Decay / Sustain / Release] フェーズ ---
   const tEndIdeal = tPeakIdeal + dDecSec;
-  if (tNoteOff <= tEndIdeal) {
-    // [Decay中断 -> Release]: Decay完了前にノートオフが来た場合
-    const decRatio = (tNoteOff - tPeakIdeal) / Math.max(0.0001, dDecSec);
+  if (tFadeStart <= tEndIdeal) {
+    // [Decay中断]: Decay完了前にノートオフが来た場合
+    const decRatio = (tFadeStart - tPeakIdeal) / Math.max(0.0001, dDecSec);
     const levAtOff = peakLevel - decRatio * (peakLevel - endLevel);
-
-    param.linearRampToValueAtTime(0, tNoteOff);
+    if (tFadeStart > tPeakIdeal) {
+      param.linearRampToValueAtTime(levAtOff, tFadeStart);
+    }
+    param.linearRampToValueAtTime(0, tEnd);
   } else {
     // [Decay通常完了]: peakLevelからendLevel（Sustainレベル相当）へ減衰
     param.linearRampToValueAtTime(endLevel, tEndIdeal);
 
-    // [Release]: ノートオフからstopTimeにかけてendLevelを維持/収束
-    param.linearRampToValueAtTime(0, tNoteOff);
+    if (tFadeStart > tEndIdeal && endLevel > 0) {
+      param.setValueAtTime(endLevel, tFadeStart);
+    }
+    // ノート終了時に0へスムーズにフェード
+    param.linearRampToValueAtTime(0, tEnd);
   }
 };
 
@@ -783,24 +817,37 @@ const schedulePitchEnvelope = (
   }
 
   const peakFreq = Math.max(1, baseFreq * Math.max(0.01, rate));
-  const clipDur = Math.max(0.002, duration - 0.01);
-  const stopTime = time + Math.max(0.003, duration - 0.001);
+  const durSec = Math.max(0.002, Number(duration ?? 1.0));
+  const clipDur = Math.max(0.002, durSec - 0.01);
+  const tEnd = time + clipDur;
 
   if (atk > 0) {
     opFreqParam.setValueAtTime(baseFreq, time);
-    const tPeak = Math.min(time + atk, time + clipDur);
-    opFreqParam.exponentialRampToValueAtTime(peakFreq, tPeak);
-    const tDecay = Math.min(tPeak + len, time + clipDur);
-    opFreqParam.exponentialRampToValueAtTime(baseFreq, tDecay);
-    if (stopTime > tDecay) {
-      opFreqParam.setValueAtTime(baseFreq, stopTime);
+    if (tEnd <= time + atk) {
+      // 短いノート: 前半で途中までベンドし、後半でbaseFreqに着地
+      const tMid = time + Math.max(0.0005, (tEnd - time) * 0.5);
+      const ratio = (tMid - time) / atk;
+      const intermFreq = Math.max(
+        1,
+        baseFreq * Math.pow(peakFreq / baseFreq, ratio),
+      );
+      opFreqParam.exponentialRampToValueAtTime(intermFreq, tMid);
+      opFreqParam.exponentialRampToValueAtTime(baseFreq, tEnd);
+    } else {
+      const tPeak = time + atk;
+      opFreqParam.exponentialRampToValueAtTime(peakFreq, tPeak);
+      const tDecay = Math.max(tPeak + 0.0005, Math.min(tPeak + len, tEnd));
+      opFreqParam.exponentialRampToValueAtTime(baseFreq, tDecay);
+      if (tEnd > tDecay) {
+        opFreqParam.setValueAtTime(baseFreq, tEnd);
+      }
     }
   } else {
     opFreqParam.setValueAtTime(peakFreq, time);
-    const tDecay = Math.min(time + len, time + clipDur);
+    const tDecay = Math.max(time + 0.0005, Math.min(time + len, tEnd));
     opFreqParam.exponentialRampToValueAtTime(baseFreq, tDecay);
-    if (stopTime > tDecay) {
-      opFreqParam.setValueAtTime(baseFreq, stopTime);
+    if (tEnd > tDecay) {
+      opFreqParam.setValueAtTime(baseFreq, tEnd);
     }
   }
 };
@@ -928,15 +975,12 @@ const createFeedbackLoop = (ctx, targetOp, fdbkGainValue) => {
 
 const digitoneAlgo1 = (ctx, time, ops, envNodes, fdbkGain) => {
   const { opC, opA, opB1, opB2 } = ops;
-  const { gainA, gainB1, gainB2 } = envNodes;
+  const { gainA, gainB2, carrierGainB1 } = envNodes;
 
   const fb = createFeedbackLoop(ctx, opA, fdbkGain);
 
   opB2.connect(gainB2);
   gainB2.connect(opB1.frequency);
-
-  opB1.connect(gainB1);
-  gainB1.connect(opC.frequency);
 
   opA.connect(gainA);
   gainA.connect(opC.frequency);
@@ -944,7 +988,13 @@ const digitoneAlgo1 = (ctx, time, ops, envNodes, fdbkGain) => {
   const outX = new GainNode(ctx, { gain: 1 });
   const outY = new GainNode(ctx, { gain: 1 });
   opC.connect(outX);
-  opB1.connect(outY);
+
+  if (carrierGainB1) {
+    opB1.connect(carrierGainB1);
+    carrierGainB1.connect(outY);
+  } else {
+    opB1.connect(outY);
+  }
 
   return {
     outX,
@@ -959,12 +1009,6 @@ const digitoneAlgo1 = (ctx, time, ops, envNodes, fdbkGain) => {
         gainB2.disconnect();
       } catch (e) {}
       try {
-        opB1.disconnect(gainB1);
-      } catch (e) {}
-      try {
-        gainB1.disconnect();
-      } catch (e) {}
-      try {
         opA.disconnect(gainA);
       } catch (e) {}
       try {
@@ -973,9 +1017,18 @@ const digitoneAlgo1 = (ctx, time, ops, envNodes, fdbkGain) => {
       try {
         opC.disconnect(outX);
       } catch (e) {}
-      try {
-        opB1.disconnect(outY);
-      } catch (e) {}
+      if (carrierGainB1) {
+        try {
+          opB1.disconnect(carrierGainB1);
+        } catch (e) {}
+        try {
+          carrierGainB1.disconnect();
+        } catch (e) {}
+      } else {
+        try {
+          opB1.disconnect(outY);
+        } catch (e) {}
+      }
       try {
         outX.disconnect();
       } catch (e) {}
@@ -988,7 +1041,7 @@ const digitoneAlgo1 = (ctx, time, ops, envNodes, fdbkGain) => {
 
 const digitoneAlgo2 = (ctx, time, ops, envNodes, fdbkGain) => {
   const { opC, opA, opB1, opB2 } = ops;
-  const { gainA, gainB1, gainB2 } = envNodes;
+  const { gainA, gainB2, carrierGainB1 } = envNodes;
 
   const fb = createFeedbackLoop(ctx, opB2, fdbkGain);
 
@@ -1001,7 +1054,13 @@ const digitoneAlgo2 = (ctx, time, ops, envNodes, fdbkGain) => {
   const outX = new GainNode(ctx, { gain: 1 });
   const outY = new GainNode(ctx, { gain: 1 });
   opC.connect(outX);
-  opB1.connect(outY);
+
+  if (carrierGainB1) {
+    opB1.connect(carrierGainB1);
+    carrierGainB1.connect(outY);
+  } else {
+    opB1.connect(outY);
+  }
 
   return {
     outX,
@@ -1024,9 +1083,18 @@ const digitoneAlgo2 = (ctx, time, ops, envNodes, fdbkGain) => {
       try {
         opC.disconnect(outX);
       } catch (e) {}
-      try {
-        opB1.disconnect(outY);
-      } catch (e) {}
+      if (carrierGainB1) {
+        try {
+          opB1.disconnect(carrierGainB1);
+        } catch (e) {}
+        try {
+          carrierGainB1.disconnect();
+        } catch (e) {}
+      } else {
+        try {
+          opB1.disconnect(outY);
+        } catch (e) {}
+      }
       try {
         outX.disconnect();
       } catch (e) {}
@@ -1039,7 +1107,7 @@ const digitoneAlgo2 = (ctx, time, ops, envNodes, fdbkGain) => {
 
 const digitoneAlgo3 = (ctx, time, ops, envNodes, fdbkGain) => {
   const { opC, opA, opB1, opB2 } = ops;
-  const { gainA } = envNodes;
+  const { gainA, carrierGainB1, carrierGainB2 } = envNodes;
 
   const fb = createFeedbackLoop(ctx, opA, fdbkGain);
 
@@ -1051,8 +1119,20 @@ const digitoneAlgo3 = (ctx, time, ops, envNodes, fdbkGain) => {
   const outX = new GainNode(ctx, { gain: 1 });
   const outY = new GainNode(ctx, { gain: 1 });
   opC.connect(outX);
-  opB2.connect(outX);
-  opB1.connect(outY);
+
+  if (carrierGainB2) {
+    opB2.connect(carrierGainB2);
+    carrierGainB2.connect(outX);
+  } else {
+    opB2.connect(outX);
+  }
+
+  if (carrierGainB1) {
+    opB1.connect(carrierGainB1);
+    carrierGainB1.connect(outY);
+  } else {
+    opB1.connect(outY);
+  }
 
   return {
     outX,
@@ -1069,12 +1149,30 @@ const digitoneAlgo3 = (ctx, time, ops, envNodes, fdbkGain) => {
       try {
         opC.disconnect(outX);
       } catch (e) {}
-      try {
-        opB2.disconnect(outX);
-      } catch (e) {}
-      try {
-        opB1.disconnect(outY);
-      } catch (e) {}
+      if (carrierGainB2) {
+        try {
+          opB2.disconnect(carrierGainB2);
+        } catch (e) {}
+        try {
+          carrierGainB2.disconnect();
+        } catch (e) {}
+      } else {
+        try {
+          opB2.disconnect(outX);
+        } catch (e) {}
+      }
+      if (carrierGainB1) {
+        try {
+          opB1.disconnect(carrierGainB1);
+        } catch (e) {}
+        try {
+          carrierGainB1.disconnect();
+        } catch (e) {}
+      } else {
+        try {
+          opB1.disconnect(outY);
+        } catch (e) {}
+      }
       try {
         outX.disconnect();
       } catch (e) {}
@@ -1087,7 +1185,7 @@ const digitoneAlgo3 = (ctx, time, ops, envNodes, fdbkGain) => {
 
 const digitoneAlgo4 = (ctx, time, ops, envNodes, fdbkGain) => {
   const { opC, opA, opB1, opB2 } = ops;
-  const { gainA, gainB1, gainB2 } = envNodes;
+  const { gainA, gainB1, gainB2, carrierGainB1 } = envNodes;
 
   const fb = createFeedbackLoop(ctx, opB2, fdbkGain);
 
@@ -1103,7 +1201,13 @@ const digitoneAlgo4 = (ctx, time, ops, envNodes, fdbkGain) => {
   const outX = new GainNode(ctx, { gain: 1 });
   const outY = new GainNode(ctx, { gain: 1 });
   opC.connect(outX);
-  opB1.connect(outY);
+
+  if (carrierGainB1) {
+    opB1.connect(carrierGainB1);
+    carrierGainB1.connect(outY);
+  } else {
+    opB1.connect(outY);
+  }
 
   return {
     outX,
@@ -1132,9 +1236,18 @@ const digitoneAlgo4 = (ctx, time, ops, envNodes, fdbkGain) => {
       try {
         opC.disconnect(outX);
       } catch (e) {}
-      try {
-        opB1.disconnect(outY);
-      } catch (e) {}
+      if (carrierGainB1) {
+        try {
+          opB1.disconnect(carrierGainB1);
+        } catch (e) {}
+        try {
+          carrierGainB1.disconnect();
+        } catch (e) {}
+      } else {
+        try {
+          opB1.disconnect(outY);
+        } catch (e) {}
+      }
       try {
         outX.disconnect();
       } catch (e) {}
@@ -1147,7 +1260,7 @@ const digitoneAlgo4 = (ctx, time, ops, envNodes, fdbkGain) => {
 
 const digitoneAlgo5 = (ctx, time, ops, envNodes, fdbkGain) => {
   const { opC, opA, opB1, opB2 } = ops;
-  const { gainA, gainB1, gainB2 } = envNodes;
+  const { gainA, gainB1, gainB2, carrierGainA } = envNodes;
 
   const fb = createFeedbackLoop(ctx, opB1, fdbkGain);
 
@@ -1163,7 +1276,13 @@ const digitoneAlgo5 = (ctx, time, ops, envNodes, fdbkGain) => {
   const outX = new GainNode(ctx, { gain: 1 });
   const outY = new GainNode(ctx, { gain: 1 });
   opC.connect(outX);
-  opA.connect(outY);
+
+  if (carrierGainA) {
+    opA.connect(carrierGainA);
+    carrierGainA.connect(outY);
+  } else {
+    opA.connect(outY);
+  }
 
   return {
     outX,
@@ -1192,9 +1311,18 @@ const digitoneAlgo5 = (ctx, time, ops, envNodes, fdbkGain) => {
       try {
         opC.disconnect(outX);
       } catch (e) {}
-      try {
-        opA.disconnect(outY);
-      } catch (e) {}
+      if (carrierGainA) {
+        try {
+          opA.disconnect(carrierGainA);
+        } catch (e) {}
+        try {
+          carrierGainA.disconnect();
+        } catch (e) {}
+      } else {
+        try {
+          opA.disconnect(outY);
+        } catch (e) {}
+      }
       try {
         outX.disconnect();
       } catch (e) {}
@@ -1207,7 +1335,7 @@ const digitoneAlgo5 = (ctx, time, ops, envNodes, fdbkGain) => {
 
 const digitoneAlgo6 = (ctx, time, ops, envNodes, fdbkGain) => {
   const { opC, opA, opB1, opB2 } = ops;
-  const { gainA, gainB2 } = envNodes;
+  const { gainA, gainB2, carrierGainB1 } = envNodes;
 
   const fb = createFeedbackLoop(ctx, opA, fdbkGain);
 
@@ -1222,7 +1350,13 @@ const digitoneAlgo6 = (ctx, time, ops, envNodes, fdbkGain) => {
   const outX = new GainNode(ctx, { gain: 1 });
   const outY = new GainNode(ctx, { gain: 1 });
   opC.connect(outX);
-  opB1.connect(outY);
+
+  if (carrierGainB1) {
+    opB1.connect(carrierGainB1);
+    carrierGainB1.connect(outY);
+  } else {
+    opB1.connect(outY);
+  }
 
   return {
     outX,
@@ -1245,9 +1379,18 @@ const digitoneAlgo6 = (ctx, time, ops, envNodes, fdbkGain) => {
       try {
         opC.disconnect(outX);
       } catch (e) {}
-      try {
-        opB1.disconnect(outY);
-      } catch (e) {}
+      if (carrierGainB1) {
+        try {
+          opB1.disconnect(carrierGainB1);
+        } catch (e) {}
+        try {
+          carrierGainB1.disconnect();
+        } catch (e) {}
+      } else {
+        try {
+          opB1.disconnect(outY);
+        } catch (e) {}
+      }
       try {
         outX.disconnect();
       } catch (e) {}
@@ -1579,7 +1722,9 @@ const createMultimodeFilterNode = (ctx, time, value) => {
       ? Math.max(20, Math.min(18000, Number(rawFreq)))
       : defaultFreq;
 
-  const fResoVal = Number(value.fltr_reso ?? value.freso ?? value.fltQ ?? value.q ?? 0);
+  const fResoVal = Number(
+    value.fltr_reso ?? value.freso ?? value.fltQ ?? value.q ?? 0,
+  );
   const fEnvDepthVal = Number(
     value.fltr_env ?? value.fenv ?? value.fltEnv ?? 0,
   );
@@ -1607,8 +1752,7 @@ const createMultimodeFilterNode = (ctx, time, value) => {
     0.001,
     parseSeconds(value.fltr_dec ?? value.fdec ?? value.fltDec, 0.5),
   );
-  const rawSus =
-    value.fltr_sus ?? value.fsus ?? value.fltSus;
+  const rawSus = value.fltr_sus ?? value.fsus ?? value.fltSus;
   const fSusLevel =
     rawSus !== undefined && rawSus !== null && !isNaN(Number(rawSus))
       ? Math.max(20, Math.min(18000, Number(rawSus)))
@@ -1627,8 +1771,7 @@ const createMultimodeFilterNode = (ctx, time, value) => {
 
   const scheduleFilterFreq = (filterNode) => {
     const clipDur = Math.max(0.002, duration - 0.01);
-    const stopTime = time + Math.max(0.003, duration - 0.001);
-    const tNoteOff = time + clipDur;
+    const tEnd = time + clipDur;
 
     const tStart = time + fDelSec;
     const peakFreq = Math.max(
@@ -1636,13 +1779,15 @@ const createMultimodeFilterNode = (ctx, time, value) => {
       Math.min(18000, baseFreq * Math.pow(2, octaveSweep)),
     );
     const susFreq = Math.max(20, Math.min(18000, fSusLevel));
-    const endFreq = baseFreq;
 
     filterNode.frequency.cancelScheduledValues(time);
     filterNode.frequency.setValueAtTime(baseFreq, time);
 
-    if (tStart >= tNoteOff) {
-      filterNode.frequency.setValueAtTime(baseFreq, stopTime);
+    const fadeSec = Math.min(0.005, clipDur * 0.3);
+    const tFadeStart = Math.max(time, tEnd - fadeSec);
+
+    if (tStart >= tFadeStart) {
+      filterNode.frequency.setValueAtTime(baseFreq, tEnd);
       return;
     }
 
@@ -1651,43 +1796,33 @@ const createMultimodeFilterNode = (ctx, time, value) => {
     }
 
     const tPeakIdeal = tStart + fAtkSec;
-    if (tNoteOff <= tPeakIdeal) {
-      const atkRatio = (tNoteOff - tStart) / Math.max(0.0001, fAtkSec);
+    if (tFadeStart <= tPeakIdeal) {
+      const atkRatio = (tFadeStart - tStart) / Math.max(0.0001, fAtkSec);
       const actualPeakFreq = Math.max(
         20,
         Math.min(18000, baseFreq * Math.pow(2, octaveSweep * atkRatio)),
       );
-      filterNode.frequency.exponentialRampToValueAtTime(
-        actualPeakFreq,
-        tNoteOff,
-      );
-      filterNode.frequency.exponentialRampToValueAtTime(endFreq, stopTime);
+      if (tFadeStart > tStart) {
+        filterNode.frequency.exponentialRampToValueAtTime(
+          actualPeakFreq,
+          tFadeStart,
+        );
+      }
       return;
     }
 
     filterNode.frequency.exponentialRampToValueAtTime(peakFreq, tPeakIdeal);
 
     const tDecIdeal = tPeakIdeal + fDecSec;
-    if (tNoteOff <= tDecIdeal) {
-      const decRatio = (tNoteOff - tPeakIdeal) / Math.max(0.0001, fDecSec);
+    if (tFadeStart <= tDecIdeal) {
+      const decRatio = (tFadeStart - tPeakIdeal) / Math.max(0.0001, fDecSec);
       const freqAtOff = Math.max(
         20,
         Math.min(18000, peakFreq * Math.pow(susFreq / peakFreq, decRatio)),
       );
-      filterNode.frequency.exponentialRampToValueAtTime(freqAtOff, tNoteOff);
-      filterNode.frequency.exponentialRampToValueAtTime(endFreq, stopTime);
+      filterNode.frequency.exponentialRampToValueAtTime(freqAtOff, tFadeStart);
     } else {
       filterNode.frequency.exponentialRampToValueAtTime(susFreq, tDecIdeal);
-
-      const availableSustain = tNoteOff - tDecIdeal;
-      const relDuration = Math.min(fRelSec, availableSustain);
-      const tRelStart = tNoteOff - relDuration;
-
-      if (tRelStart > tDecIdeal) {
-        filterNode.frequency.setValueAtTime(susFreq, tRelStart);
-      }
-      filterNode.frequency.exponentialRampToValueAtTime(endFreq, tNoteOff);
-      filterNode.frequency.exponentialRampToValueAtTime(endFreq, stopTime);
     }
   };
 
@@ -1756,9 +1891,14 @@ const playDigitoneSynVoice = (
   getFrequencyHelper,
   gainAdjustmentHelper,
 ) => {
+  // Web Audio の 128 サンプル (Render Quantum) 境界に発音時刻をスナップし、
+  // ピッチエンベロープの離散化誤差やオシレータ初期位相のジッターを防止
+  const sampleRate = ctx?.sampleRate || 44100;
+  const blockDuration = 128 / sampleRate;
+  time = Math.round(Number(time ?? 0) / blockDuration) * blockDuration;
+
   const duration = Number(value.duration ?? 1.0);
   const clipDur = Math.max(0.002, duration - 0.01);
-  const stopTime = time + Math.max(0.003, duration - 0.001);
 
   const baseFreq = getFrequencyHelper
     ? getFrequencyHelper(value, 48)
@@ -1789,12 +1929,25 @@ const playDigitoneSynVoice = (
 
   const dtunOffset = calculateDetuneOffset(dtun);
 
-  const freqC = baseFreq * Math.max(0.01, ratioC + offsetC);
-  const freqA =
-    baseFreq * Math.max(0.01, (ratioA + offsetA) * (1 + dtunOffset));
-  const freqB1 = baseFreq * Math.max(0.01, ratioB1 + offsetB1);
-  const freqB2 =
-    baseFreq * Math.max(0.01, (ratioB2 + offsetB2) * (1 + dtunOffset));
+  const rawStereoDetune = Number(value.stereoDetune ?? value.stereodetune ?? 0);
+  const stereoDetune = Math.max(
+    0,
+    Math.min(127, isNaN(rawStereoDetune) ? 0 : rawStereoDetune),
+  );
+  // stereoDetune は 0 - 127 で最大 1 セミトーン (1 / 12 オクターブ) のレンジ
+  const detuneSemitones = (stereoDetune / 127.0) * 1.0;
+  const baseFreqL = baseFreq;
+  const baseFreqR =
+    stereoDetune === 0
+      ? baseFreqL
+      : baseFreqL * Math.pow(2, detuneSemitones / 12.0);
+
+  const getOpFreqs = (bFreq) => ({
+    freqC: bFreq * Math.max(0.01, ratioC + offsetC),
+    freqA: bFreq * Math.max(0.01, (ratioA + offsetA) * (1 + dtunOffset)),
+    freqB1: bFreq * Math.max(0.01, ratioB1 + offsetB1),
+    freqB2: bFreq * Math.max(0.01, (ratioB2 + offsetB2) * (1 + dtunOffset)),
+  });
 
   const patkSec = parseSeconds(value.patk, 0.0);
   const plenSec = parseSeconds(value.plen, 0.1);
@@ -1849,86 +2002,6 @@ const playDigitoneSynVoice = (
 
   const fdbkOpName = getFeedbackOpForAlgo(algoNum);
 
-  // Create Op C
-  const opC = new OscillatorNode(ctx, { frequency: freqC });
-  const waveC = createDigitonePeriodicWave(ctx, harm, 'C');
-  if (waveC) opC.setPeriodicWave(waveC);
-  if (shouldApplyPitchEnv('C')) {
-    schedulePitchEnvelope(opC.frequency, time, freqC, {
-      patk: patkSec,
-      plen: plenSec,
-      prate,
-      duration,
-    });
-  } else {
-    opC.frequency.setValueAtTime(freqC, time);
-  }
-
-  // Helper to create Op A, B1, B2 (either feedback operator or standard oscillator)
-  let opAController = null;
-  let opB1Controller = null;
-  let opB2Controller = null;
-
-  const createOp = (opName, freq) => {
-    const isFeedbackOp = opName === fdbkOpName;
-    if (isFeedbackOp) {
-      const fbController = createDigitoneFeedbackOperator(
-        ctx,
-        time,
-        freq,
-        harm,
-        opName,
-        fdbk,
-        duration,
-      );
-      if (shouldApplyPitchEnv(opName)) {
-        schedulePitchEnvelope(fbController.osc.frequency, time, freq, {
-          patk: patkSec,
-          plen: plenSec,
-          prate,
-          duration,
-        });
-      } else {
-        fbController.osc.frequency.setValueAtTime(freq, time);
-      }
-      return fbController;
-    }
-
-    const osc = new OscillatorNode(ctx, { frequency: freq });
-    const wave = createDigitonePeriodicWave(ctx, harm, opName, 0);
-    if (wave) osc.setPeriodicWave(wave);
-    if (shouldApplyPitchEnv(opName)) {
-      schedulePitchEnvelope(osc.frequency, time, freq, {
-        patk: patkSec,
-        plen: plenSec,
-        prate,
-        duration,
-      });
-    } else {
-      osc.frequency.setValueAtTime(freq, time);
-    }
-
-    return {
-      node: osc,
-      osc,
-      start: (t) => osc.start(t),
-      stop: (t) => {
-        try {
-          osc.stop(t);
-        } catch (e) {}
-      },
-      disconnect: () => {
-        try {
-          osc.disconnect();
-        } catch (e) {}
-      },
-    };
-  };
-
-  opAController = createOp('A', freqA);
-  opB1Controller = createOp('B1', freqB1);
-  opB2Controller = createOp('B2', freqB2);
-
   const atkA = Math.max(
     0.0005,
     parseSeconds(value.atkA ?? value.atattackA, 0.001),
@@ -1948,122 +2021,275 @@ const playDigitoneSynVoice = (
 
   const { b1: levB1, b2: levB2 } = calculateLevB(levBVal);
 
-  const gainA = new GainNode(ctx, { gain: 0 });
-  const gainB1 = new GainNode(ctx, { gain: 0 });
-  const gainB2 = new GainNode(ctx, { gain: 0 });
-
-  const maxModDeviationA = freqA * 8.0;
-  const maxModDeviationB1 = freqB1 * 8.0;
-  const maxModDeviationB2 = freqB2 * 8.0;
-
-  scheduleOperatorEnv(gainA.gain, time, {
-    delSec: adel,
-    atkSec: atkA,
-    decSec: decA,
-    endVal: endA,
-    levVal: levA,
-    trigMode: atrg,
-    duration,
-    maxDeviation: maxModDeviationA,
-  });
-
-  scheduleOperatorEnv(gainB1.gain, time, {
-    delSec: bdel,
-    atkSec: atkB,
-    decSec: decB,
-    endVal: endB,
-    levVal: levB1,
-    trigMode: btrg,
-    duration,
-    maxDeviation: maxModDeviationB1,
-  });
-
-  scheduleOperatorEnv(gainB2.gain, time, {
-    delSec: bdel,
-    atkSec: atkB,
-    decSec: decB,
-    endVal: endB,
-    levVal: levB2,
-    trigMode: btrg,
-    duration,
-    maxDeviation: maxModDeviationB2,
-  });
-
-  // Dedicated carrier amplitude envelopes (gain 0..1) for algorithms where carriers have filled lines (Algo 7 & 8)
-  const carrierGainA = new GainNode(ctx, { gain: 0 });
-  const carrierGainB1 = new GainNode(ctx, { gain: 0 });
-  const carrierGainB2 = new GainNode(ctx, { gain: 0 });
-
-  scheduleOperatorEnv(carrierGainA.gain, time, {
-    delSec: adel,
-    atkSec: atkA,
-    decSec: decA,
-    endVal: endA,
-    levVal: levA,
-    trigMode: atrg,
-    duration,
-    maxDeviation: 1.0,
-  });
-
-  scheduleOperatorEnv(carrierGainB1.gain, time, {
-    delSec: bdel,
-    atkSec: atkB,
-    decSec: decB,
-    endVal: endB,
-    levVal: levB1,
-    trigMode: btrg,
-    duration,
-    maxDeviation: 1.0,
-  });
-
-  scheduleOperatorEnv(carrierGainB2.gain, time, {
-    delSec: bdel,
-    atkSec: atkB,
-    decSec: decB,
-    endVal: endB,
-    levVal: levB2,
-    trigMode: btrg,
-    duration,
-    maxDeviation: 1.0,
-  });
-
   const algoFunc = getDigitoneAlgorithm(algoNum);
-  const fdbkGainHz = (fdbk / 120.0) * baseFreq * 2.0;
-
-  const algoResult = algoFunc(
-    ctx,
-    time,
-    {
-      opC,
-      opA: opAController.node,
-      opB1: opB1Controller.node,
-      opB2: opB2Controller.node,
-    },
-    {
-      gainA,
-      gainB1,
-      gainB2,
-      carrierGainA,
-      carrierGainB1,
-      carrierGainB2,
-    },
-    fdbkGainHz,
-  );
-
   const normMix = (mix + 64) / 127;
   const mixGainX = Math.cos(normMix * 0.5 * Math.PI);
   const mixGainY = Math.sin(normMix * 0.5 * Math.PI);
 
-  const xGain = new GainNode(ctx, { gain: mixGainX });
-  const yGain = new GainNode(ctx, { gain: mixGainY });
+  const createFmCore = (bFreq) => {
+    const { freqC, freqA, freqB1, freqB2 } = getOpFreqs(bFreq);
+
+    // Create Op C
+    const opC = new OscillatorNode(ctx, { frequency: freqC });
+    const waveC = createDigitonePeriodicWave(ctx, harm, 'C');
+    if (waveC) opC.setPeriodicWave(waveC);
+    if (shouldApplyPitchEnv('C')) {
+      schedulePitchEnvelope(opC.frequency, time, freqC, {
+        patk: patkSec,
+        plen: plenSec,
+        prate,
+        duration,
+      });
+    } else {
+      opC.frequency.setValueAtTime(freqC, time);
+    }
+
+    const createOp = (opName, freq) => {
+      const isFeedbackOp = opName === fdbkOpName;
+      if (isFeedbackOp) {
+        const fbController = createDigitoneFeedbackOperator(
+          ctx,
+          time,
+          freq,
+          harm,
+          opName,
+          fdbk,
+          duration,
+        );
+        if (shouldApplyPitchEnv(opName)) {
+          schedulePitchEnvelope(fbController.osc.frequency, time, freq, {
+            patk: patkSec,
+            plen: plenSec,
+            prate,
+            duration,
+          });
+        } else {
+          fbController.osc.frequency.setValueAtTime(freq, time);
+        }
+        return fbController;
+      }
+
+      const osc = new OscillatorNode(ctx, { frequency: freq });
+      const wave = createDigitonePeriodicWave(ctx, harm, opName, 0);
+      if (wave) osc.setPeriodicWave(wave);
+      if (shouldApplyPitchEnv(opName)) {
+        schedulePitchEnvelope(osc.frequency, time, freq, {
+          patk: patkSec,
+          plen: plenSec,
+          prate,
+          duration,
+        });
+      } else {
+        osc.frequency.setValueAtTime(freq, time);
+      }
+
+      return {
+        node: osc,
+        osc,
+        start: (t) => osc.start(t),
+        stop: (t) => {
+          try {
+            osc.stop(t);
+          } catch (e) {}
+        },
+        disconnect: () => {
+          try {
+            osc.disconnect();
+          } catch (e) {}
+        },
+      };
+    };
+
+    const opAController = createOp('A', freqA);
+    const opB1Controller = createOp('B1', freqB1);
+    const opB2Controller = createOp('B2', freqB2);
+
+    const gainA = new GainNode(ctx, { gain: 0 });
+    const gainB1 = new GainNode(ctx, { gain: 0 });
+    const gainB2 = new GainNode(ctx, { gain: 0 });
+
+    const maxModDeviationA = freqA * 8.0;
+    const maxModDeviationB1 = freqB1 * 8.0;
+    const maxModDeviationB2 = freqB2 * 8.0;
+
+    scheduleOperatorEnv(gainA.gain, time, {
+      delSec: adel,
+      atkSec: atkA,
+      decSec: decA,
+      endVal: endA,
+      levVal: levA,
+      trigMode: atrg,
+      duration,
+      maxDeviation: maxModDeviationA,
+    });
+
+    scheduleOperatorEnv(gainB1.gain, time, {
+      delSec: bdel,
+      atkSec: atkB,
+      decSec: decB,
+      endVal: endB,
+      levVal: levB1,
+      trigMode: btrg,
+      duration,
+      maxDeviation: maxModDeviationB1,
+    });
+
+    scheduleOperatorEnv(gainB2.gain, time, {
+      delSec: bdel,
+      atkSec: atkB,
+      decSec: decB,
+      endVal: endB,
+      levVal: levB2,
+      trigMode: btrg,
+      duration,
+      maxDeviation: maxModDeviationB2,
+    });
+
+    const carrierGainA = new GainNode(ctx, { gain: 0 });
+    const carrierGainB1 = new GainNode(ctx, { gain: 0 });
+    const carrierGainB2 = new GainNode(ctx, { gain: 0 });
+
+    scheduleOperatorEnv(carrierGainA.gain, time, {
+      delSec: adel,
+      atkSec: atkA,
+      decSec: decA,
+      endVal: endA,
+      levVal: levA,
+      trigMode: atrg,
+      duration,
+      maxDeviation: 1.0,
+    });
+
+    scheduleOperatorEnv(carrierGainB1.gain, time, {
+      delSec: bdel,
+      atkSec: atkB,
+      decSec: decB,
+      endVal: endB,
+      levVal: levB1,
+      trigMode: btrg,
+      duration,
+      maxDeviation: 1.0,
+    });
+
+    scheduleOperatorEnv(carrierGainB2.gain, time, {
+      delSec: bdel,
+      atkSec: atkB,
+      decSec: decB,
+      endVal: endB,
+      levVal: levB2,
+      trigMode: btrg,
+      duration,
+      maxDeviation: 1.0,
+    });
+
+    const fdbkGainHz = (fdbk / 120.0) * bFreq * 2.0;
+
+    const algoResult = algoFunc(
+      ctx,
+      time,
+      {
+        opC,
+        opA: opAController.node,
+        opB1: opB1Controller.node,
+        opB2: opB2Controller.node,
+      },
+      {
+        gainA,
+        gainB1,
+        gainB2,
+        carrierGainA,
+        carrierGainB1,
+        carrierGainB2,
+      },
+      fdbkGainHz,
+    );
+
+    const xGain = new GainNode(ctx, { gain: mixGainX });
+    const yGain = new GainNode(ctx, { gain: mixGainY });
+    const outGain = new GainNode(ctx, { gain: 1.0 });
+
+    algoResult.outX.connect(xGain);
+    algoResult.outY.connect(yGain);
+    xGain.connect(outGain);
+    yGain.connect(outGain);
+
+    return {
+      output: outGain,
+      opC,
+      opAController,
+      opB1Controller,
+      opB2Controller,
+      start: (t) => {
+        opC.start(t);
+        opAController.start(t);
+        opB1Controller.start(t);
+        opB2Controller.start(t);
+      },
+      stop: (t) => {
+        try {
+          opC.stop(t);
+        } catch (e) {}
+        try {
+          opAController.stop(t);
+        } catch (e) {}
+        try {
+          opB1Controller.stop(t);
+        } catch (e) {}
+        try {
+          opB2Controller.stop(t);
+        } catch (e) {}
+      },
+      disconnect: () => {
+        algoResult.disconnect();
+        try {
+          opC.disconnect();
+        } catch (e) {}
+        opAController.disconnect();
+        opB1Controller.disconnect();
+        opB2Controller.disconnect();
+        try {
+          carrierGainA.disconnect();
+        } catch (e) {}
+        try {
+          carrierGainB1.disconnect();
+        } catch (e) {}
+        try {
+          carrierGainB2.disconnect();
+        } catch (e) {}
+        try {
+          xGain.disconnect();
+        } catch (e) {}
+        try {
+          yGain.disconnect();
+        } catch (e) {}
+        try {
+          outGain.disconnect();
+        } catch (e) {}
+      },
+    };
+  };
+
+  const coreL = createFmCore(baseFreqL);
+  let coreR = null;
+  let mergerNode = null;
 
   const drvVal = Number(value.drv ?? value.overdrive ?? 0);
   const overdriveNode = createDigitoneOverdriveNode(ctx, drvVal);
 
-  algoResult.outX.connect(xGain);
-  algoResult.outY.connect(yGain);
-  xGain.connect(overdriveNode.input);
-  yGain.connect(overdriveNode.input);
+  if (stereoDetune !== 0) {
+    coreR = createFmCore(baseFreqR);
+    if (typeof ChannelMergerNode !== 'undefined') {
+      mergerNode = new ChannelMergerNode(ctx, { numberOfInputs: 2 });
+      coreL.output.connect(mergerNode, 0, 0);
+      coreR.output.connect(mergerNode, 0, 1);
+      mergerNode.connect(overdriveNode.input);
+    } else {
+      coreL.output.connect(overdriveNode.input);
+      coreR.output.connect(overdriveNode.input);
+    }
+  } else {
+    coreL.output.connect(overdriveNode.input);
+  }
 
   const baseVal = Number(value.base ?? 0);
   const widthVal = Number(value.width ?? 127);
@@ -2117,42 +2343,30 @@ const playDigitoneSynVoice = (
     finalOutNode = pannerNode;
   }
 
-  opC.start(time);
-  opAController.start(time);
-  opB1Controller.start(time);
-  opB2Controller.start(time);
+  const totalAmpEnvTime = ampAtkSec + ampDecSec + ampRelSec;
+  const actualVoiceDur = Math.min(clipDur, totalAmpEnvTime);
+  const actualStopTime = time + actualVoiceDur + 0.02;
 
-  opC.stop(stopTime);
-  opAController.stop(stopTime);
-  opB1Controller.stop(stopTime);
-  opB2Controller.stop(stopTime);
+  coreL.start(time);
+  if (coreR) {
+    coreR.start(time);
+  }
+
+  coreL.stop(actualStopTime);
+  if (coreR) {
+    coreR.stop(actualStopTime);
+  }
 
   const cleanup = () => {
-    algoResult.disconnect();
-    try {
-      opC.disconnect();
-    } catch (e) {}
-    opAController.disconnect();
-    opB1Controller.disconnect();
-    opB2Controller.disconnect();
-    try {
-      carrierGainA.disconnect();
-    } catch (e) {}
-    try {
-      carrierGainB1.disconnect();
-    } catch (e) {}
-    try {
-      carrierGainB2.disconnect();
-    } catch (e) {}
-    try {
-      xGain.disconnect();
-    } catch (e) {}
-    try {
-      yGain.disconnect();
-    } catch (e) {}
-    try {
-      mixedOut.disconnect();
-    } catch (e) {}
+    coreL.disconnect();
+    if (coreR) {
+      coreR.disconnect();
+    }
+    if (mergerNode) {
+      try {
+        mergerNode.disconnect();
+      } catch (e) {}
+    }
     overdriveNode.disconnect();
     baseWidthNode.disconnect();
     multimodeNode.disconnect();
@@ -2166,7 +2380,7 @@ const playDigitoneSynVoice = (
     }
   };
 
-  opC.addEventListener('ended', () => {
+  coreL.opC.addEventListener('ended', () => {
     cleanup();
     if (typeof onended === 'function') {
       onended();
@@ -2176,18 +2390,10 @@ const playDigitoneSynVoice = (
   return {
     node: finalOutNode,
     stop: (t) => {
-      try {
-        opC.stop(t);
-      } catch (e) {}
-      try {
-        opAController.stop(t);
-      } catch (e) {}
-      try {
-        opB1Controller.stop(t);
-      } catch (e) {}
-      try {
-        opB2Controller.stop(t);
-      } catch (e) {}
+      coreL.stop(t);
+      if (coreR) {
+        coreR.stop(t);
+      }
     },
   };
 };
