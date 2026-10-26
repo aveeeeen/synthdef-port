@@ -6212,6 +6212,12 @@ const playDigitoneSynVoice = (
   getFrequencyHelper,
   gainAdjustmentHelper,
 ) => {
+  // Web Audio の 128 サンプル (Render Quantum) 境界に発音時刻をスナップし、
+  // ピッチエンベロープの離散化誤差やオシレータ初期位相のジッターを防止
+  const sampleRate = ctx?.sampleRate || 44100;
+  const blockDuration = 128 / sampleRate;
+  time = Math.round(Number(time ?? 0) / blockDuration) * blockDuration;
+
   const duration = Number(value.duration ?? 1.0);
   const clipDur = Math.max(0.002, duration - 0.01);
   const stopTime = time + Math.max(0.003, duration - 0.001);
