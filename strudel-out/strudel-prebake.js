@@ -96,12 +96,12 @@ createParam('width');
  */
 const noteToMidi = (note, defaultOctave = 3) => {
   if (typeof note !== 'string') {
-    throw new Error('not a note: "' + note + '"');
+    throw new Error('not a note: \'' + note + '\'');
   }
   const match = note.match(/^([a-gA-G])([#bsf]*)(-?[0-9]*)$/);
   const [pc, acc = '', octStr] = match?.slice(1) || [];
   if (!pc) {
-    throw new Error('not a note: "' + note + '"');
+    throw new Error('not a note: \'' + note + '\'');
   }
   const oct =
     octStr !== '' && octStr !== undefined ? Number(octStr) : defaultOctave;
@@ -548,7 +548,7 @@ const createDigitonePeriodicWave = (ctx, harm, opName, fdbk = 0) => {
     _periodicWaveCacheByCtx.set(ctx, ctxCache);
   }
 
-  const cacheKey = `${effectiveHarm.toFixed(1)}_${fbVal}`;
+  const cacheKey = effectiveHarm.toFixed(1) + '_' + fbVal;
   if (ctxCache.has(cacheKey)) {
     const wave = ctxCache.get(cacheKey);
     ctxCache.delete(cacheKey);
@@ -900,7 +900,7 @@ const getCachedFeedbackBuffer = (ctx, freq) => {
   }
   const sampleRate = ctx.sampleRate ?? 44100;
   const roundedFreq = Math.round(Math.max(20, Number(freq ?? 440)) * 10) / 10;
-  const cacheKey = `${sampleRate}_${roundedFreq.toFixed(1)}`;
+  const cacheKey = sampleRate + '_' + roundedFreq.toFixed(1);
 
   let ctxCache = _feedbackBufferCacheByCtx.get(ctx);
   if (!ctxCache) {
